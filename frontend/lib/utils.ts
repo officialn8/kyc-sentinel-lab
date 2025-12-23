@@ -1,0 +1,53 @@
+import { type ClassValue, clsx } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+export function formatDate(date: string | Date): string {
+  return new Intl.DateTimeFormat("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(date));
+}
+
+export function formatRelativeTime(date: string | Date): string {
+  const now = new Date();
+  const then = new Date(date);
+  const diffMs = now.getTime() - then.getTime();
+  const diffSecs = Math.floor(diffMs / 1000);
+  const diffMins = Math.floor(diffSecs / 60);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffSecs < 60) return "just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return formatDate(date);
+}
+
+export function getRiskColor(score: number): string {
+  if (score < 40) return "risk-low";
+  if (score < 70) return "risk-medium";
+  return "risk-high";
+}
+
+export function getRiskLabel(score: number): string {
+  if (score < 40) return "Low Risk";
+  if (score < 70) return "Medium Risk";
+  return "High Risk";
+}
+
+export function formatPercentage(value: number, decimals = 1): string {
+  return `${(value * 100).toFixed(decimals)}%`;
+}
+
+export function truncateId(id: string, length = 8): string {
+  if (id.length <= length) return id;
+  return `${id.slice(0, length)}...`;
+}
+
+
+

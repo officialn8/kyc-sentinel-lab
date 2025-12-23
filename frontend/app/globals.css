@@ -1,0 +1,140 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 25% 3%;
+    --foreground: 210 20% 95%;
+
+    --card: 220 20% 6%;
+    --card-foreground: 210 20% 95%;
+
+    --popover: 220 20% 6%;
+    --popover-foreground: 210 20% 95%;
+
+    --primary: 173 80% 40%;
+    --primary-foreground: 220 25% 3%;
+
+    --secondary: 220 15% 15%;
+    --secondary-foreground: 210 20% 95%;
+
+    --muted: 220 15% 12%;
+    --muted-foreground: 215 15% 55%;
+
+    --accent: 173 80% 40%;
+    --accent-foreground: 220 25% 3%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 20% 98%;
+
+    --border: 220 15% 18%;
+    --input: 220 15% 18%;
+    --ring: 173 80% 40%;
+
+    --radius: 0.625rem;
+  }
+
+  .light {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+
+    --primary: 173 80% 40%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+
+    --accent: 173 80% 40%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 173 80% 40%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--muted));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* Glass effect for cards */
+.glass {
+  background: rgba(255, 255, 255, 0.02);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Gradient backgrounds */
+.gradient-mesh {
+  background: 
+    radial-gradient(at 40% 20%, hsla(173, 80%, 40%, 0.1) 0px, transparent 50%),
+    radial-gradient(at 80% 0%, hsla(220, 80%, 40%, 0.1) 0px, transparent 50%),
+    radial-gradient(at 0% 50%, hsla(270, 80%, 40%, 0.05) 0px, transparent 50%);
+}
+
+/* Status colors */
+.status-pass {
+  @apply bg-success/10 text-success border-success/20;
+}
+
+.status-review {
+  @apply bg-warning/10 text-warning border-warning/20;
+}
+
+.status-fail {
+  @apply bg-danger/10 text-danger border-danger/20;
+}
+
+/* Risk score colors */
+.risk-low {
+  @apply text-success;
+}
+
+.risk-medium {
+  @apply text-warning;
+}
+
+.risk-high {
+  @apply text-danger;
+}
+
+
+
