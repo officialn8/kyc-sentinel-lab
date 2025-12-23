@@ -94,6 +94,10 @@ class SessionDetail(BaseModel):
     id_asset_key: Optional[str] = None
     selfie_url: Optional[str] = None
     id_url: Optional[str] = None
+    
+    # Face crops (generated during processing)
+    selfie_crop_url: Optional[str] = None
+    id_crop_url: Optional[str] = None
 
     # Results
     result: Optional[ResultResponse] = None

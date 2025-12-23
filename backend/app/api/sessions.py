@@ -74,16 +74,25 @@ async def finalize_session(
     db: DbSession,
     processing: Processing,
     background_tasks: BackgroundTasks,
+    force: bool = False,
 ) -> dict:
-    """Mark uploads complete and start processing."""
+    """Mark uploads complete and start processing.
+    
+    Args:
+        force: If True, allows restarting processing for stuck sessions.
+    """
     session = await db.get(KYCSession, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if session.status != "pending":
+    # Allow force-restart for stuck processing sessions
+    if session.status == "processing" and force:
+        # Session is stuck, allow retry
+        pass
+    elif session.status != "pending":
         raise HTTPException(
             status_code=400,
-            detail=f"Session is already {session.status}",
+            detail=f"Session is already {session.status}. Use ?force=true to retry stuck sessions.",
         )
 
     # Update status
@@ -171,6 +180,17 @@ async def get_session(
     if session.id_asset_key:
         id_url = await storage.generate_presigned_download_url(session.id_asset_key)
 
+    # Check for face crops and generate presigned URLs
+    selfie_crop_url = None
+    id_crop_url = None
+    selfie_crop_key = f"crops/{session_id}/selfie_face.jpg"
+    id_crop_key = f"crops/{session_id}/id_face.jpg"
+    
+    if await storage.object_exists(selfie_crop_key):
+        selfie_crop_url = await storage.generate_presigned_download_url(selfie_crop_key)
+    if await storage.object_exists(id_crop_key):
+        id_crop_url = await storage.generate_presigned_download_url(id_crop_key)
+
     return SessionDetail(
         id=session.id,
         created_at=session.created_at,
@@ -188,6 +208,8 @@ async def get_session(
         id_asset_key=session.id_asset_key,
         selfie_url=selfie_url,
         id_url=id_url,
+        selfie_crop_url=selfie_crop_url,
+        id_crop_url=id_crop_url,
         result=session.result,
         reasons=session.reasons,
     )

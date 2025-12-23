@@ -44,13 +44,18 @@ class StorageService:
             )
             return url, self.url_expiration
 
-    async def generate_presigned_download_url(self, key: str) -> str:
-        """Generate a presigned URL for downloading an object."""
+    async def generate_presigned_download_url(self, key: str, expiration: int | None = None) -> str:
+        """Generate a presigned URL for downloading an object.
+        
+        Args:
+            key: Object key in storage
+            expiration: Optional expiration time in seconds (defaults to config value)
+        """
         async with self.session.client(**self._get_client_config()) as client:
             url = await client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.bucket, "Key": key},
-                ExpiresIn=self.url_expiration,
+                ExpiresIn=expiration or self.url_expiration,
             )
             return url
 

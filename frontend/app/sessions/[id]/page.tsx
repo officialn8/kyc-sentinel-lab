@@ -10,6 +10,7 @@ import {
   Clock,
   FileText,
   Info,
+  Loader2,
   Scan,
   User,
 } from "lucide-react";
@@ -42,6 +43,11 @@ export default function SessionDetailPage() {
     queryKey: ["session", sessionId],
     queryFn: () => api.getSession(sessionId),
     enabled: !!sessionId,
+    // Poll every 2 seconds while processing
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      return data?.status === "processing" ? 2000 : false;
+    },
   });
 
   if (isLoading) {
@@ -92,6 +98,21 @@ export default function SessionDetailPage() {
           <p className="text-sm text-muted-foreground font-mono">{session.id}</p>
         </div>
       </div>
+
+      {/* Processing Banner */}
+      {session.status === "processing" && (
+        <Card className="glass border-l-4 border-l-primary bg-primary/5">
+          <CardContent className="flex items-center gap-4 py-4">
+            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            <div>
+              <p className="font-semibold text-primary">Processing</p>
+              <p className="text-sm text-muted-foreground">
+                Running face matching, document analysis, and PAD checks...
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Status Banner */}
       {result && (
@@ -149,6 +170,16 @@ export default function SessionDetailPage() {
                       </div>
                     )}
                   </div>
+                  {session.selfie_crop_url && (
+                    <div className="mt-2">
+                      <p className="text-xs text-muted-foreground mb-1">Face Crop</p>
+                      <img
+                        src={session.selfie_crop_url}
+                        alt="Selfie face crop"
+                        className="h-20 w-20 object-cover rounded border border-border"
+                      />
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-2">
                   <p className="text-sm font-medium flex items-center gap-2">
@@ -168,6 +199,16 @@ export default function SessionDetailPage() {
                       </div>
                     )}
                   </div>
+                  {session.id_crop_url && (
+                    <div className="mt-2">
+                      <p className="text-xs text-muted-foreground mb-1">Face Crop</p>
+                      <img
+                        src={session.id_crop_url}
+                        alt="ID face crop"
+                        className="h-20 w-20 object-cover rounded border border-border"
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             </CardContent>

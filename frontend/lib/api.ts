@@ -24,6 +24,8 @@ export interface SessionDetail extends Session {
   resolution?: string;
   selfie_url?: string;
   id_url?: string;
+  selfie_crop_url?: string;
+  id_crop_url?: string;
   result?: Result;
   reasons: Reason[];
 }

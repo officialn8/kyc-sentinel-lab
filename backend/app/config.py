@@ -31,8 +31,7 @@ class Settings(BaseSettings):
 
     # Processing backend
     use_modal: bool = False
-    modal_token_id: str | None = None
-    modal_token_secret: str | None = None
+    modal_environment: str = "dev"  # dev | prod
 
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
