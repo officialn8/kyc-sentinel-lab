@@ -8,6 +8,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Add current directory to Python path
+export PYTHONPATH="${PYTHONPATH:-}:${SCRIPT_DIR}"
+
 echo "[startup] running alembic migrations..."
 alembic upgrade head
 
