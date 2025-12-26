@@ -1,4 +1,9 @@
 """Alembic environment configuration for async SQLAlchemy."""
+import sys
+from pathlib import Path
+
+# Add the backend directory to Python path for Railway deployment
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import asyncio
 from logging.config import fileConfig
