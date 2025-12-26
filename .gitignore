@@ -46,8 +46,8 @@ logs/
 uploads/
 temp/
 
-# ML models (download separately)
-models/
+# ML models (download separately) - use /models/ to only match root-level
+/models/
 *.onnx
 *.pt
 *.pth
