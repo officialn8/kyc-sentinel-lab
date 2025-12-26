@@ -1,15 +1,18 @@
 """Session CRUD endpoints."""
 
+import os
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import DbSession, Storage, Processing
+from app.api.deps import DbSession, Storage
+from app.api.security import rate_limiter
 from app.models.session import KYCSession
 from app.models.result import KYCResult
+from app.services.job_queue import enqueue_process_session
 from app.schemas.session import (
     SessionCreate,
     SessionResponse,
@@ -21,8 +24,48 @@ from app.schemas.session import (
 
 router = APIRouter()
 
+_SELFIE_EXT_ALLOWLIST = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".webm"}
+_ID_EXT_ALLOWLIST = {".jpg", ".jpeg", ".png", ".webp"}
+_CONTENT_TYPE_TO_EXT = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    # iOS often uses QuickTime for .mov uploads
+    "video/quicktime": ".mov",
+}
 
-@router.post("", response_model=SessionCreateResponse)
+
+def _ext_from_filename(filename: str | None) -> str | None:
+    if not filename:
+        return None
+    _, ext = os.path.splitext(filename)
+    ext = (ext or "").lower().strip()
+    return ext or None
+
+
+def _pick_extension(
+    *,
+    filename: str | None,
+    content_type: str | None,
+    allowlist: set[str],
+) -> str:
+    ext = _ext_from_filename(filename)
+    if ext and ext in allowlist:
+        return ext
+    guessed = _CONTENT_TYPE_TO_EXT.get((content_type or "").lower().strip())
+    if guessed and guessed in allowlist:
+        return guessed
+    return ""
+
+
+@router.post(
+    "",
+    response_model=SessionCreateResponse,
+    dependencies=[Depends(rate_limiter(limit=20, window_seconds=60))],
+)
 async def create_session(
     data: SessionCreate,
     db: DbSession,
@@ -43,11 +86,32 @@ async def create_session(
     await db.flush()
 
     # Generate presigned URLs for uploads
-    selfie_key = f"sessions/{session.id}/selfie"
-    id_key = f"sessions/{session.id}/id"
+    selfie_ext = _pick_extension(
+        filename=data.selfie_filename,
+        content_type=data.selfie_content_type,
+        allowlist=_SELFIE_EXT_ALLOWLIST,
+    )
+    id_ext = _pick_extension(
+        filename=data.id_filename,
+        content_type=data.id_content_type,
+        allowlist=_ID_EXT_ALLOWLIST,
+    )
 
-    selfie_url, selfie_expiry = await storage.generate_presigned_upload_url(selfie_key)
-    id_url, id_expiry = await storage.generate_presigned_upload_url(id_key)
+    # If client provided metadata but we couldn't validate it, reject.
+    if (data.selfie_filename or data.selfie_content_type) and not selfie_ext:
+        raise HTTPException(status_code=400, detail="Unsupported selfie file type")
+    if (data.id_filename or data.id_content_type) and not id_ext:
+        raise HTTPException(status_code=400, detail="Unsupported ID document file type")
+
+    selfie_key = f"sessions/{session.id}/selfie{selfie_ext}"
+    id_key = f"sessions/{session.id}/id{id_ext}"
+
+    selfie_url, selfie_expiry = await storage.generate_presigned_upload_url(
+        selfie_key, content_type=data.selfie_content_type
+    )
+    id_url, id_expiry = await storage.generate_presigned_upload_url(
+        id_key, content_type=data.id_content_type
+    )
 
     # Store asset keys
     session.selfie_asset_key = selfie_key
@@ -68,12 +132,13 @@ async def create_session(
     )
 
 
-@router.post("/{session_id}/finalize")
+@router.post(
+    "/{session_id}/finalize",
+    dependencies=[Depends(rate_limiter(limit=30, window_seconds=60))],
+)
 async def finalize_session(
     session_id: UUID,
     db: DbSession,
-    processing: Processing,
-    background_tasks: BackgroundTasks,
     force: bool = False,
 ) -> dict:
     """Mark uploads complete and start processing.
@@ -97,12 +162,10 @@ async def finalize_session(
 
     # Update status
     session.status = "processing"
+    await enqueue_process_session(db, str(session_id))
     await db.commit()
 
-    # Start background processing
-    background_tasks.add_task(processing.process_session, str(session_id))
-
-    return {"status": "processing", "message": "Session processing started"}
+    return {"status": "processing", "message": "Session queued for processing"}
 
 
 @router.get("", response_model=SessionListResponse)
@@ -215,7 +278,10 @@ async def get_session(
     )
 
 
-@router.delete("/{session_id}")
+@router.delete(
+    "/{session_id}",
+    dependencies=[Depends(rate_limiter(limit=30, window_seconds=60))],
+)
 async def delete_session(
     session_id: UUID,
     db: DbSession,

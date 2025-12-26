@@ -44,6 +44,10 @@ export default function UploadPage() {
       const { session, upload_urls } = await api.createSession({
         source: "upload",
         ...deviceInfo,
+        selfie_filename: selfie.file.name,
+        selfie_content_type: selfie.file.type,
+        id_filename: idDoc.file.name,
+        id_content_type: idDoc.file.type,
       });
 
       // Upload files

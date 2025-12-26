@@ -25,21 +25,31 @@ class StorageService:
         return {
             "service_name": "s3",
             "endpoint_url": self.endpoint_url,
+            # Cloudflare R2 expects region 'auto' (S3-compatible).
+            # MinIO ignores region.
+            "region_name": "auto",
             "aws_access_key_id": self.access_key,
             "aws_secret_access_key": self.secret_key,
             "config": Config(signature_version="s3v4"),
         }
 
-    async def generate_presigned_upload_url(self, key: str) -> tuple[str, int]:
+    async def generate_presigned_upload_url(
+        self, key: str, content_type: str | None = None
+    ) -> tuple[str, int]:
         """Generate a presigned URL for uploading an object.
         
         Returns:
             Tuple of (presigned_url, expiration_seconds)
         """
         async with self.session.client(**self._get_client_config()) as client:
+            params = {"Bucket": self.bucket, "Key": key}
+            # If ContentType is included in the signature, clients must send the
+            # same Content-Type header (helps prevent obvious misuse).
+            if content_type:
+                params["ContentType"] = content_type
             url = await client.generate_presigned_url(
                 "put_object",
-                Params={"Bucket": self.bucket, "Key": key},
+                Params=params,
                 ExpiresIn=self.url_expiration,
             )
             return url, self.url_expiration

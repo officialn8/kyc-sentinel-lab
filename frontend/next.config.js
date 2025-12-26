@@ -1,4 +1,6 @@
 /** @type {import('next').NextConfig} */
+const r2PublicHostname = process.env.NEXT_PUBLIC_R2_PUBLIC_HOSTNAME;
+
 const nextConfig = {
   reactStrictMode: true,
   images: {
@@ -12,15 +14,15 @@ const nextConfig = {
         protocol: "https",
         hostname: "*.r2.cloudflarestorage.com",
       },
+      ...(r2PublicHostname
+        ? [
+            {
+              protocol: "https",
+              hostname: r2PublicHostname,
+            },
+          ]
+        : []),
     ],
-  },
-  async rewrites() {
-    return [
-      {
-        source: "/api/:path*",
-        destination: `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/:path*`,
-      },
-    ];
   },
 };
 

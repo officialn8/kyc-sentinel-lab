@@ -2,12 +2,14 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from app.api.deps import DbSession, Processing
+from app.api.deps import DbSession
+from app.api.security import rate_limiter
 from app.models.session import KYCSession
 from app.schemas.session import SessionResponse
+from app.services.job_queue import enqueue_generate_synthetic_session
 
 router = APIRouter()
 
@@ -74,12 +76,14 @@ async def list_attack_families() -> list[AttackFamily]:
     return ATTACK_FAMILIES
 
 
-@router.post("", response_model=list[SessionResponse])
+@router.post(
+    "",
+    response_model=list[SessionResponse],
+    dependencies=[Depends(rate_limiter(limit=5, window_seconds=60))],
+)
 async def generate_synthetic_sessions(
     request: SimulateRequest,
     db: DbSession,
-    processing: Processing,
-    background_tasks: BackgroundTasks,
 ) -> list[SessionResponse]:
     """Generate synthetic KYC sessions with specified attack patterns."""
     sessions = []
@@ -96,13 +100,13 @@ async def generate_synthetic_sessions(
 
     await db.flush()
 
-    # Start processing for each session
+    # Enqueue processing for each session (durable queue)
     for session in sessions:
-        background_tasks.add_task(
-            processing.generate_synthetic_session,
-            str(session.id),
-            request.attack_family,
-            request.attack_severity,
+        await enqueue_generate_synthetic_session(
+            db,
+            session_id=str(session.id),
+            attack_family=request.attack_family,
+            attack_severity=request.attack_severity,
         )
 
     await db.commit()

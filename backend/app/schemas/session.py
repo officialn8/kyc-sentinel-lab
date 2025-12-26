@@ -27,6 +27,14 @@ class SessionCreate(BaseModel):
     device_model: Optional[str] = None
     ip_country: Optional[str] = None
 
+    # Optional upload metadata (recommended for production)
+    # Used to generate keys with file extensions and to sign presigned URLs
+    # with Content-Type constraints.
+    selfie_filename: Optional[str] = None
+    selfie_content_type: Optional[str] = None
+    id_filename: Optional[str] = None
+    id_content_type: Optional[str] = None
+
 
 class PresignedUrlResponse(BaseModel):
     """Presigned URL response for uploading assets."""

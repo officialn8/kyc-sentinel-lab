@@ -11,7 +11,7 @@ from alembic import context
 
 # Import all models to ensure they're registered with Base
 from app.database import Base
-from app.models import KYCSession, KYCResult, KYCReason, KYCFrameMetric
+from app.models import KYCSession, KYCResult, KYCReason, KYCFrameMetric, KYCJob
 from app.config import settings
 
 # this is the Alembic Config object, which provides
@@ -65,7 +65,7 @@ async def run_async_migrations() -> None:
     """Run migrations in 'online' mode with async engine."""
     # Use asyncpg URL directly for async migrations
     connectable = create_async_engine(
-        settings.database_url,
+        settings.async_database_url,
         poolclass=pool.NullPool,
     )
 

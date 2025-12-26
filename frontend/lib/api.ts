@@ -2,7 +2,10 @@
  * API client for KYC Sentinel backend
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Always call same-origin `/api/*`.
+// In production, `frontend/app/api/[...path]/route.ts` proxies to the backend and
+// can inject server-only secrets (e.g., BACKEND_API_KEY) safely.
+const API_BASE = "";
 
 export interface Session {
   id: string;
@@ -143,6 +146,10 @@ export const api = {
     device_os?: string;
     device_model?: string;
     ip_country?: string;
+    selfie_filename?: string;
+    selfie_content_type?: string;
+    id_filename?: string;
+    id_content_type?: string;
   }) =>
     fetchApi<SessionCreateResponse>("/api/sessions", {
       method: "POST",

@@ -49,7 +49,7 @@ A KYC Deepfake Red-Team Simulator with an Explainable Detection Dashboard. This 
 cd kyc-sentinel-lab
 
 # Copy environment file
-cp .env.example .env
+cp env.example .env
 # Edit .env with your configuration
 ```
 
@@ -160,6 +160,10 @@ alembic upgrade head
 # Rollback
 alembic downgrade -1
 ```
+
+## Deployment
+
+See [`docs/deployment.md`](docs/deployment.md) for the Vercel + Railway + R2 + Modal setup.
 
 ## License
 

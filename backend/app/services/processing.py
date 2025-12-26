@@ -240,10 +240,6 @@ class LocalBackend:
         Called as a background task after upload finalization.
         """
         from sqlalchemy import select
-        # #region agent log
-        import json, time; _log_path = "/Users/nate/kyc-sentinel-lab/.cursor/debug.log"
-        def _dbg(loc, msg, data, hyp): open(_log_path, "a").write(json.dumps({"location": loc, "message": msg, "data": data, "hypothesisId": hyp, "timestamp": int(time.time()*1000), "sessionId": "debug-session"}) + "\n")
-        # #endregion
 
         from app.database import async_session_maker
         from app.models.session import KYCSession
@@ -253,16 +249,9 @@ class LocalBackend:
         from app.services.scoring import compute_risk_score
         from app.services.reason_codes import ReasonCode, REASON_MESSAGES, get_reason_severity
 
-        # #region agent log
-        _dbg("processing.py:218", "process_session started", {"session_id": session_id}, "A")
-        # #endregion
-
         async with async_session_maker() as db:
             session = await db.get(KYCSession, session_id)
             if not session:
-                # #region agent log
-                _dbg("processing.py:234", "session not found", {"session_id": session_id}, "D")
-                # #endregion
                 return
 
             try:
@@ -270,18 +259,12 @@ class LocalBackend:
                 await db.commit()
 
                 # Download assets
-                # #region agent log
-                _dbg("processing.py:242", "downloading assets", {"selfie_key": session.selfie_asset_key, "id_key": session.id_asset_key}, "A")
-                # #endregion
                 selfie_bytes = await self.storage.download_file(session.selfie_asset_key)
                 id_bytes = await self.storage.download_file(session.id_asset_key)
 
                 # Decode images
                 selfie_img = self._decode_image(selfie_bytes)
                 id_img = self._decode_image(id_bytes)
-                # #region agent log
-                _dbg("processing.py:260", "images decoded", {"selfie_shape": list(selfie_img.shape) if selfie_img is not None else None, "id_shape": list(id_img.shape) if id_img is not None else None}, "B")
-                # #endregion
 
                 # Check if selfie is video
                 frames: list[np.ndarray] = []
@@ -295,20 +278,8 @@ class LocalBackend:
                         selfie_img = frames[len(frames) // 2]
 
                 # Run detection modules
-                # #region agent log
-                _dbg("processing.py:275", "starting face analysis", {"selfie_shape": list(selfie_img.shape), "id_shape": list(id_img.shape)}, "B")
-                # #endregion
                 face_result = self.face_analyzer.analyze(selfie_img, id_img)
-                # #region agent log
-                _dbg("processing.py:278", "face analysis complete", {"selfie_faces": len(face_result.selfie_faces), "id_faces": len(face_result.id_faces), "similarity": face_result.similarity}, "B")
-                # #endregion
-                # #region agent log
-                _dbg("processing.py:280", "starting doc analysis", {"id_shape": list(id_img.shape)}, "B")
-                # #endregion
                 doc_result = self.doc_analyzer.analyze(id_img)
-                # #region agent log
-                _dbg("processing.py:283", "doc analysis complete", {"doc_score": doc_result.doc_score, "detected": doc_result.detected, "reason_codes": doc_result.reason_codes}, "B")
-                # #endregion
 
                 pad_result = None
                 if frames:
@@ -432,15 +403,8 @@ class LocalBackend:
 
                 session.status = "completed"
                 await db.commit()
-                # #region agent log
-                _dbg("processing.py:400", "processing completed successfully", {"session_id": str(session.id), "decision": decision, "risk_score": risk_score}, "A")
-                # #endregion
 
             except Exception as e:
-                # #region agent log
-                import traceback
-                _dbg("processing.py:405", "processing FAILED with exception", {"session_id": str(session.id), "error": str(e), "traceback": traceback.format_exc()}, "D")
-                # #endregion
                 session.status = "failed"
                 await db.commit()
                 raise
@@ -551,7 +515,7 @@ class ModalBackend:
             similarity=result["similarity"] or 0.0,
             embedding=result.get("selfie_embedding"),
             pad_score=0.0,  # PAD computed separately
-        ), result  # Return raw result for additional data
+        )
 
     async def analyze_document(self, session_id: str, id_key: str) -> DocResult:
         """Analyze document using Modal GPU with presigned URL."""
@@ -572,7 +536,7 @@ class ModalBackend:
             ocr_confidence=result["avg_confidence"],
             template_match=0.85,  # Placeholder
             doc_score=result["doc_score"],
-        ), result  # Return raw result for reason codes
+        )
 
     async def process_session(self, session_id: str) -> None:
         """

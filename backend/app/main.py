@@ -3,11 +3,12 @@
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.api import sessions, upload, simulate, metrics
+from app.api.security import require_auth
 
 
 @asynccontextmanager
@@ -47,10 +48,19 @@ async def health_check() -> dict[str, str]:
 
 
 # Include routers
-app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
-app.include_router(upload.router, prefix="/api/upload", tags=["upload"])
-app.include_router(simulate.router, prefix="/api/simulate", tags=["simulate"])
-app.include_router(metrics.router, prefix="/api/metrics", tags=["metrics"])
+api_auth = [Depends(require_auth)]
+app.include_router(
+    sessions.router, prefix="/api/sessions", tags=["sessions"], dependencies=api_auth
+)
+app.include_router(
+    upload.router, prefix="/api/upload", tags=["upload"], dependencies=api_auth
+)
+app.include_router(
+    simulate.router, prefix="/api/simulate", tags=["simulate"], dependencies=api_auth
+)
+app.include_router(
+    metrics.router, prefix="/api/metrics", tags=["metrics"], dependencies=api_auth
+)
 
 
 
