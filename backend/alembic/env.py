@@ -1,39 +1,9 @@
 """Alembic environment configuration for async SQLAlchemy."""
 import sys
-import os
 from pathlib import Path
 
-# #region agent log - DEBUG: Hypothesis A - Check calculated path
-_env_file = Path(__file__).resolve()
-_calculated_path = str(_env_file.parent.parent)
-print(f"[DEBUG-A] __file__={_env_file}", flush=True)
-print(f"[DEBUG-A] calculated_path={_calculated_path}", flush=True)
-# #endregion
-
 # Add the backend directory to Python path for Railway deployment
-sys.path.insert(0, _calculated_path)
-
-# #region agent log - DEBUG: Hypothesis D/E - Check sys.path and PYTHONPATH
-print(f"[DEBUG-D] sys.path after insert: {sys.path[:5]}", flush=True)
-print(f"[DEBUG-E] PYTHONPATH env: {os.environ.get('PYTHONPATH', 'NOT SET')}", flush=True)
-# #endregion
-
-# #region agent log - DEBUG: Hypothesis B/C - Check directory and file existence
-_app_dir = Path(_calculated_path) / "app"
-_models_dir = _app_dir / "models"
-_app_init = _app_dir / "__init__.py"
-_models_init = _models_dir / "__init__.py"
-print(f"[DEBUG-B] app_dir exists: {_app_dir.exists()} -> {_app_dir}", flush=True)
-print(f"[DEBUG-B] models_dir exists: {_models_dir.exists()} -> {_models_dir}", flush=True)
-print(f"[DEBUG-C] app/__init__.py exists: {_app_init.exists()}", flush=True)
-print(f"[DEBUG-C] app/models/__init__.py exists: {_models_init.exists()}", flush=True)
-# List app directory contents if it exists
-if _app_dir.exists():
-    print(f"[DEBUG-B] app_dir contents: {list(_app_dir.iterdir())[:10]}", flush=True)
-else:
-    # Try listing parent to see what's there
-    print(f"[DEBUG-B] calculated_path contents: {list(Path(_calculated_path).iterdir())[:15]}", flush=True)
-# #endregion
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import asyncio
 from logging.config import fileConfig
