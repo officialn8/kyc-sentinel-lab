@@ -14,8 +14,8 @@ router = APIRouter()
 )
 async def get_presigned_url(
     key: str,
-    content_type: str | None = None,
     storage: Storage,
+    content_type: str | None = None,
 ) -> dict:
     """Get a presigned URL for uploading a file."""
     url, expires_in = await storage.generate_presigned_upload_url(
