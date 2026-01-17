@@ -15,6 +15,8 @@ class ReasonCode(str, Enum):
     FACE_LOW_QUALITY_SELFIE = "FACE_LOW_QUALITY_SELFIE"
     FACE_LOW_QUALITY_ID = "FACE_LOW_QUALITY_ID"
     FACE_EXTREME_POSE = "FACE_EXTREME_POSE"
+    # Phase 2: Age verification
+    FACE_AGE_DISCREPANCY = "FACE_AGE_DISCREPANCY"
 
     # Presentation Attack Detection (PAD)
     PAD_SUSPECT_REPLAY = "PAD_SUSPECT_REPLAY"
@@ -27,6 +29,9 @@ class ReasonCode(str, Enum):
     PAD_NO_BLINK_DETECTED = "PAD_NO_BLINK_DETECTED"
     PAD_PRINTED_TEXTURE = "PAD_PRINTED_TEXTURE"
     PAD_FLAT_DEPTH = "PAD_FLAT_DEPTH"
+    # Phase 2: Virtual camera and audio liveness
+    PAD_VIRTUAL_CAMERA = "PAD_VIRTUAL_CAMERA"
+    PAD_LIP_SYNC_MISMATCH = "PAD_LIP_SYNC_MISMATCH"
 
     # Document analysis
     DOC_TEMPLATE_MISMATCH = "DOC_TEMPLATE_MISMATCH"
@@ -39,11 +44,19 @@ class ReasonCode(str, Enum):
     DOC_MRZ_INVALID = "DOC_MRZ_INVALID"
     DOC_MRZ_MISMATCH = "DOC_MRZ_MISMATCH"
     DOC_BARCODE_MISMATCH = "DOC_BARCODE_MISMATCH"
+    # Phase 2: ELA and copy-move detection
+    DOC_ELA_MANIPULATION = "DOC_ELA_MANIPULATION"
+    DOC_COPY_MOVE_DETECTED = "DOC_COPY_MOVE_DETECTED"
 
     # Metadata / device
     META_HIGH_RISK_DEVICE = "META_HIGH_RISK_DEVICE"
     META_SUSPICIOUS_TIMING = "META_SUSPICIOUS_TIMING"
     META_MULTIPLE_RETRIES = "META_MULTIPLE_RETRIES"
+
+    # Phase 2: Fraud pattern detection
+    FRAUD_HIGH_VELOCITY = "FRAUD_HIGH_VELOCITY"
+    FRAUD_GEO_MISMATCH = "FRAUD_GEO_MISMATCH"
+    FRAUD_SIMILAR_FACE = "FRAUD_SIMILAR_FACE"
 
 
 REASON_MESSAGES: dict[ReasonCode, str] = {
@@ -56,6 +69,8 @@ REASON_MESSAGES: dict[ReasonCode, str] = {
     ReasonCode.FACE_LOW_QUALITY_SELFIE: "Selfie image quality too low for reliable matching",
     ReasonCode.FACE_LOW_QUALITY_ID: "ID photo quality too low for reliable matching",
     ReasonCode.FACE_EXTREME_POSE: "Face pose angle too extreme for reliable matching (deviation: {pose_deviation:.1f}°)",
+    # Phase 2: Age verification
+    ReasonCode.FACE_AGE_DISCREPANCY: "Apparent age differs from ID date of birth by {difference_years} years (tolerance: {tolerance_years})",
 
     # PAD
     ReasonCode.PAD_SUSPECT_REPLAY: "Detected screen capture artifacts suggesting replay attack",
@@ -68,6 +83,9 @@ REASON_MESSAGES: dict[ReasonCode, str] = {
     ReasonCode.PAD_NO_BLINK_DETECTED: "No natural eye blinks detected in video (expected at least {expected_blinks})",
     ReasonCode.PAD_PRINTED_TEXTURE: "Skin texture analysis suggests printed photo rather than live face",
     ReasonCode.PAD_FLAT_DEPTH: "Depth analysis indicates flat surface (possible photo/screen attack)",
+    # Phase 2: Virtual camera and audio liveness
+    ReasonCode.PAD_VIRTUAL_CAMERA: "Virtual camera software detected ({software_name})",
+    ReasonCode.PAD_LIP_SYNC_MISMATCH: "Lip movement does not correlate with audio (correlation: {correlation:.2f})",
 
     # Document
     ReasonCode.DOC_TEMPLATE_MISMATCH: "Document layout does not match expected template",
@@ -80,11 +98,19 @@ REASON_MESSAGES: dict[ReasonCode, str] = {
     ReasonCode.DOC_MRZ_INVALID: "Machine Readable Zone (MRZ) check digits are invalid",
     ReasonCode.DOC_MRZ_MISMATCH: "MRZ data does not match OCR-extracted text fields",
     ReasonCode.DOC_BARCODE_MISMATCH: "Barcode data does not match document text",
+    # Phase 2: ELA and copy-move detection
+    ReasonCode.DOC_ELA_MANIPULATION: "Error Level Analysis suggests image manipulation (score: {score:.2f})",
+    ReasonCode.DOC_COPY_MOVE_DETECTED: "Copy-move forgery detected in document image",
 
     # Metadata
     ReasonCode.META_HIGH_RISK_DEVICE: "Session originated from high-risk device profile",
     ReasonCode.META_SUSPICIOUS_TIMING: "Session timing patterns suggest automation",
     ReasonCode.META_MULTIPLE_RETRIES: "Multiple retry attempts detected in short period",
+
+    # Phase 2: Fraud pattern detection
+    ReasonCode.FRAUD_HIGH_VELOCITY: "High submission velocity detected ({submissions} in {period})",
+    ReasonCode.FRAUD_GEO_MISMATCH: "Document country ({doc_country}) differs from device location ({device_country})",
+    ReasonCode.FRAUD_SIMILAR_FACE: "Similar face found in {similar_count} other sessions",
 }
 
 
@@ -109,6 +135,10 @@ def get_reason_severity(code: ReasonCode) -> str:
         ReasonCode.PAD_FLAT_DEPTH,
         # Phase 1: MRZ validation failures
         ReasonCode.DOC_MRZ_INVALID,
+        # Phase 2: High severity new codes
+        ReasonCode.PAD_VIRTUAL_CAMERA,  # Virtual camera is strong injection indicator
+        ReasonCode.PAD_LIP_SYNC_MISMATCH,  # Audio mismatch is strong fraud indicator
+        ReasonCode.DOC_COPY_MOVE_DETECTED,  # Copy-move forgery is definite tampering
     }
 
     warn_severity = {
@@ -129,6 +159,12 @@ def get_reason_severity(code: ReasonCode) -> str:
         ReasonCode.DOC_METADATA_SUSPICIOUS,
         ReasonCode.DOC_MRZ_MISMATCH,
         ReasonCode.DOC_BARCODE_MISMATCH,
+        # Phase 2: Warning-level new codes
+        ReasonCode.FACE_AGE_DISCREPANCY,  # Age mismatch needs manual review
+        ReasonCode.DOC_ELA_MANIPULATION,  # ELA is heuristic, may have false positives
+        ReasonCode.FRAUD_HIGH_VELOCITY,  # May be legitimate multiple attempts
+        ReasonCode.FRAUD_GEO_MISMATCH,  # Could be VPN or travel
+        ReasonCode.FRAUD_SIMILAR_FACE,  # Could be same person legitimate retry
     }
 
     if code in high_severity:

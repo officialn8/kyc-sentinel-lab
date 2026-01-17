@@ -43,6 +43,16 @@ class Settings(BaseSettings):
     use_modal: bool = False
     modal_environment: str = "dev"  # dev | prod
 
+    # Scoring configuration
+    # Available profiles: default, fintech_high_risk, crypto_exchange, social_verification
+    scoring_profile: str = "default"
+    
+    # Velocity rule thresholds for fraud detection
+    velocity_device_1h_limit: int = 3  # Max submissions per device per hour
+    velocity_device_24h_limit: int = 10  # Max submissions per device per 24 hours
+    velocity_ip_1h_limit: int = 5  # Max submissions per IP per hour
+    velocity_ip_24h_limit: int = 20  # Max submissions per IP per 24 hours
+
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
 

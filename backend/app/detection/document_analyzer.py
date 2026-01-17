@@ -70,6 +70,20 @@ class EXIFAnalysis:
 
 
 @dataclass
+class ELAResult:
+    """Result of Error Level Analysis for forgery detection."""
+    
+    manipulation_detected: bool
+    manipulation_score: float  # 0-1, higher = more likely manipulated
+    high_error_regions: list[dict]  # Regions with abnormally high error levels
+    avg_error_level: float
+    max_error_level: float
+    error_std: float  # Standard deviation of error levels
+    suspicious_region_count: int
+    confidence: float
+
+
+@dataclass
 class DocumentAnalysisResult:
     """Result of document analysis."""
 
@@ -85,6 +99,9 @@ class DocumentAnalysisResult:
     mrz_validation: Optional[MRZValidation] = None
     exif_analysis: Optional[EXIFAnalysis] = None
     
+    # Phase 2: Error Level Analysis
+    ela_result: Optional[ELAResult] = None
+    
     # Backward compatible fields
     detected: bool = True
     ocr_results: list[OCRResult] = field(default_factory=list)
@@ -99,7 +116,58 @@ class DocumentAnalyzer:
     
     Performs OCR text extraction and anomaly detection to identify
     potentially tampered or fraudulent documents.
+    
+    Supports multiple languages for international ID documents.
     """
+
+    # Supported language codes for PaddleOCR
+    # See: https://github.com/PaddlePaddle/PaddleOCR/blob/main/doc/doc_en/multi_languages_en.md
+    SUPPORTED_LANGUAGES = {
+        # Latin-based
+        "en": "English",
+        "fr": "French",
+        "de": "German (German)",
+        "es": "Spanish",
+        "pt": "Portuguese",
+        "it": "Italian",
+        "nl": "Dutch",
+        "pl": "Polish",
+        "ro": "Romanian",
+        "cs": "Czech",
+        "hu": "Hungarian",
+        "sv": "Swedish",
+        "da": "Danish",
+        "no": "Norwegian",
+        "fi": "Finnish",
+        "tr": "Turkish",
+        "vi": "Vietnamese",
+        "id": "Indonesian",
+        "ms": "Malay",
+        # Asian
+        "ch": "Chinese (Simplified)",
+        "cht": "Chinese (Traditional)",
+        "ja": "Japanese",
+        "ko": "Korean",
+        "th": "Thai",
+        "ta": "Tamil",
+        "te": "Telugu",
+        "hi": "Hindi",
+        "mr": "Marathi",
+        "ne": "Nepali",
+        # Cyrillic
+        "ru": "Russian",
+        "uk": "Ukrainian",
+        "be": "Belarusian",
+        "bg": "Bulgarian",
+        "sr": "Serbian (Cyrillic)",
+        # Arabic script
+        "ar": "Arabic",
+        "fa": "Persian/Farsi",
+        "ur": "Urdu",
+        # Other
+        "he": "Hebrew",
+        "el": "Greek",
+    }
 
     def __init__(
         self,
@@ -112,7 +180,12 @@ class DocumentAnalyzer:
         Initialize PaddleOCR.
         
         Args:
-            lang: Language code for OCR
+            lang: Language code for OCR. Supported codes include:
+                - Latin: en, fr, de, es, pt, it, nl, pl, ro, cs, hu, sv, da, no, fi, tr, vi, id, ms
+                - Asian: ch (Chinese Simplified), cht (Traditional), ja, ko, th, ta, te, hi, mr, ne
+                - Cyrillic: ru, uk, be, bg, sr
+                - Arabic script: ar, fa, ur
+                - Other: he, el
             use_gpu: Whether to use GPU acceleration
             min_confidence_threshold: Minimum confidence to accept text
             low_confidence_threshold: Threshold to flag low confidence
@@ -122,25 +195,46 @@ class DocumentAnalyzer:
         self.min_confidence_threshold = min_confidence_threshold
         self.low_confidence_threshold = low_confidence_threshold
         self._ocr = None
+        self._ocr_instances: dict[str, any] = {}  # Cache OCR instances per language
 
-    def _ensure_model(self) -> None:
-        """Ensure PaddleOCR is loaded (lazy initialization)."""
-        if self._ocr is None:
+    def _ensure_model(self, lang: Optional[str] = None) -> None:
+        """Ensure PaddleOCR is loaded for the specified language.
+        
+        Args:
+            lang: Language code (defaults to self.lang)
+        """
+        target_lang = lang or self.lang
+        
+        if target_lang not in self._ocr_instances:
             from paddleocr import PaddleOCR
             
             # PaddleOCR v2.8+ uses new API parameters
-            self._ocr = PaddleOCR(
+            self._ocr_instances[target_lang] = PaddleOCR(
                 use_textline_orientation=True,
-                lang=self.lang,
+                lang=target_lang,
                 device="gpu" if self.use_gpu else "cpu",
             )
+        
+        self._ocr = self._ocr_instances[target_lang]
 
-    def analyze(self, image: np.ndarray) -> DocumentAnalysisResult:
+    @classmethod
+    def get_supported_languages(cls) -> dict[str, str]:
+        """Get dictionary of supported language codes and names."""
+        return cls.SUPPORTED_LANGUAGES.copy()
+
+    def analyze(
+        self,
+        image: np.ndarray,
+        lang: Optional[str] = None,
+    ) -> DocumentAnalysisResult:
         """
         Analyze document image for text extraction and anomalies.
         
         Args:
             image: BGR image array
+            lang: Optional language code to use for this analysis.
+                If not provided, uses the instance's default language.
+                See SUPPORTED_LANGUAGES for available codes.
         
         Returns:
             DocumentAnalysisResult with extracted text and anomaly flags
@@ -149,7 +243,10 @@ class DocumentAnalyzer:
         evidence: dict = {}
         anomalies: list[dict] = []
 
-        self._ensure_model()
+        # Use specified language or default
+        target_lang = lang or self.lang
+        self._ensure_model(target_lang)
+        evidence["ocr_language"] = target_lang
         
         # Run OCR using the new predict() API (PaddleOCR v2.8+)
         result = self._ocr.predict(image)
@@ -343,21 +440,35 @@ class DocumentAnalyzer:
             alignment_score=alignment_score,
         )
 
-    def analyze_document(self, image: np.ndarray) -> DocumentAnalysisResult:
-        """Alias for analyze() for backward compatibility."""
-        return self.analyze(image)
+    def analyze_document(
+        self,
+        image: np.ndarray,
+        lang: Optional[str] = None,
+    ) -> DocumentAnalysisResult:
+        """Alias for analyze() for backward compatibility.
+        
+        Args:
+            image: Input image as numpy array (BGR format)
+            lang: Optional language code for OCR
+        """
+        return self.analyze(image, lang=lang)
 
-    def extract_text(self, image: np.ndarray) -> list[OCRResult]:
+    def extract_text(
+        self,
+        image: np.ndarray,
+        lang: Optional[str] = None,
+    ) -> list[OCRResult]:
         """
         Extract text from document image.
         
         Args:
             image: Input image as numpy array
+            lang: Optional language code for OCR
             
         Returns:
             List of OCR results with text and confidence
         """
-        result = self.analyze(image)
+        result = self.analyze(image, lang=lang)
         return result.ocr_results
 
     def _get_center(self, bbox: list) -> tuple[int, int]:
@@ -1234,6 +1345,200 @@ class DocumentAnalyzer:
             suspicious_flags=suspicious_flags,
             is_suspicious=is_suspicious,
         )
+
+    # === PHASE 2: ERROR LEVEL ANALYSIS (ELA) ===
+
+    def compute_ela(
+        self,
+        image: np.ndarray,
+        quality: int = 90,
+        scale: float = 15.0,
+    ) -> np.ndarray:
+        """Compute Error Level Analysis for an image.
+        
+        ELA works by re-compressing an image at a known quality level and
+        comparing it with the original. Areas that have been edited or
+        pasted will show different error levels because they've been
+        compressed at different quality levels.
+        
+        Args:
+            image: BGR image array
+            quality: JPEG quality level for re-compression (default 90)
+            scale: Scaling factor to amplify error differences (default 15)
+            
+        Returns:
+            ELA image (grayscale) showing error levels
+        """
+        # Encode to JPEG at specified quality
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
+        _, encoded = cv2.imencode('.jpg', image, encode_params)
+        
+        # Decode back
+        recompressed = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        
+        # Compute absolute difference
+        ela = cv2.absdiff(image, recompressed)
+        
+        # Convert to grayscale
+        ela_gray = cv2.cvtColor(ela, cv2.COLOR_BGR2GRAY)
+        
+        # Scale to amplify differences
+        ela_scaled = np.clip(ela_gray.astype(float) * scale, 0, 255).astype(np.uint8)
+        
+        return ela_scaled
+
+    def detect_ela_manipulation(
+        self,
+        image: np.ndarray,
+        quality: int = 90,
+        threshold_percentile: float = 95,
+        min_region_size: int = 100,
+    ) -> ELAResult:
+        """Detect potential image manipulation using Error Level Analysis.
+        
+        Analyzes the ELA image to find regions with abnormally high
+        error levels, which may indicate tampering.
+        
+        Args:
+            image: BGR image array
+            quality: JPEG quality for ELA (default 90)
+            threshold_percentile: Percentile threshold for "high" error (default 95)
+            min_region_size: Minimum pixel count for a suspicious region
+            
+        Returns:
+            ELAResult with manipulation detection details
+        """
+        # Compute ELA
+        ela = self.compute_ela(image, quality=quality)
+        
+        # Calculate statistics
+        avg_error = float(np.mean(ela))
+        max_error = float(np.max(ela))
+        error_std = float(np.std(ela))
+        
+        # Determine threshold for "high" error
+        threshold = np.percentile(ela, threshold_percentile)
+        
+        # Find high-error regions
+        high_error_mask = ela > threshold
+        
+        # Find contours of high-error regions
+        contours, _ = cv2.findContours(
+            high_error_mask.astype(np.uint8),
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        
+        high_error_regions = []
+        h, w = image.shape[:2]
+        
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < min_region_size:
+                continue
+            
+            x, y, rw, rh = cv2.boundingRect(contour)
+            
+            # Calculate region statistics
+            region_mask = np.zeros_like(ela)
+            cv2.drawContours(region_mask, [contour], -1, 255, -1)
+            region_pixels = ela[region_mask > 0]
+            
+            region_info = {
+                "bbox": (x, y, rw, rh),
+                "area": int(area),
+                "mean_error": float(np.mean(region_pixels)),
+                "max_error": float(np.max(region_pixels)),
+                "relative_position": (
+                    round(x / w, 3),
+                    round(y / h, 3),
+                    round((x + rw) / w, 3),
+                    round((y + rh) / h, 3),
+                ),
+            }
+            high_error_regions.append(region_info)
+        
+        # Sort by mean error (most suspicious first)
+        high_error_regions.sort(key=lambda r: r["mean_error"], reverse=True)
+        
+        # Calculate manipulation score based on error statistics
+        # Higher variance and more high-error regions = more suspicious
+        
+        # Normalize average error to 0-1 range (assuming 255 max)
+        norm_avg_error = avg_error / 50  # ELA values rarely exceed 50 even with scaling
+        norm_avg_error = min(norm_avg_error, 1.0)
+        
+        # Region count score
+        region_score = min(len(high_error_regions) / 5, 1.0)
+        
+        # Variance score (high variance suggests mixed content)
+        norm_std = min(error_std / 30, 1.0)
+        
+        # Combined manipulation score
+        manipulation_score = (
+            norm_avg_error * 0.3 +
+            region_score * 0.4 +
+            norm_std * 0.3
+        )
+        
+        # Determine if manipulation is likely
+        # High score + significant regions = likely manipulated
+        manipulation_detected = (
+            manipulation_score > 0.5 and
+            len(high_error_regions) >= 2
+        ) or (
+            manipulation_score > 0.7
+        )
+        
+        # Confidence based on clarity of signals
+        confidence = min(manipulation_score * 1.2, 1.0) if manipulation_detected else 0.3
+        
+        return ELAResult(
+            manipulation_detected=manipulation_detected,
+            manipulation_score=round(manipulation_score, 3),
+            high_error_regions=high_error_regions[:10],  # Limit to top 10
+            avg_error_level=round(avg_error, 2),
+            max_error_level=round(max_error, 2),
+            error_std=round(error_std, 2),
+            suspicious_region_count=len(high_error_regions),
+            confidence=round(confidence, 3),
+        )
+
+    def analyze_with_ela(
+        self,
+        image: np.ndarray,
+        lang: Optional[str] = None,
+        run_ela: bool = True,
+    ) -> DocumentAnalysisResult:
+        """Analyze document with optional Error Level Analysis.
+        
+        Extended version of analyze() that also runs ELA to detect
+        potential Photoshopping or tampering.
+        
+        Args:
+            image: BGR image array
+            lang: Optional language code for OCR
+            run_ela: Whether to run ELA analysis (default True)
+            
+        Returns:
+            DocumentAnalysisResult with ELA results
+        """
+        # Run standard analysis
+        result = self.analyze(image, lang=lang)
+        
+        # Run ELA if requested
+        if run_ela:
+            ela_result = self.detect_ela_manipulation(image)
+            result.ela_result = ela_result
+            
+            result.evidence["ela_manipulation_score"] = ela_result.manipulation_score
+            result.evidence["ela_suspicious_regions"] = ela_result.suspicious_region_count
+            
+            if ela_result.manipulation_detected:
+                result.reason_codes.append("DOC_ELA_MANIPULATION")
+                result.evidence["ela_high_error_regions"] = ela_result.high_error_regions[:5]
+        
+        return result
 
 
 # Singleton

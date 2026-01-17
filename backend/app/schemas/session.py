@@ -26,6 +26,18 @@ class SessionCreate(BaseModel):
     device_os: Optional[str] = None
     device_model: Optional[str] = None
     ip_country: Optional[str] = None
+    
+    # Phase 2: Fraud detection fields
+    device_fingerprint: Optional[str] = Field(
+        default=None,
+        max_length=256,
+        description="Unique device identifier for velocity tracking",
+    )
+    device_timezone: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description="Client timezone (e.g., 'America/New_York')",
+    )
 
     # Optional upload metadata (recommended for production)
     # Used to generate keys with file extensions and to sign presigned URLs
@@ -123,6 +135,37 @@ class SessionFilter(BaseModel):
     decision: Optional[str] = None
     min_risk_score: Optional[int] = None
     max_risk_score: Optional[int] = None
+
+
+class SimilarFaceResponse(BaseModel):
+    """Response for similar face search (fraud ring detection)."""
+
+    session_id: UUID
+    created_at: datetime
+    status: str
+    source: str
+    attack_family: Optional[str] = None
+    similarity_score: float = Field(
+        description="Cosine similarity score (0-1, higher = more similar)"
+    )
+    distance: float = Field(
+        description="Cosine distance (0-2, lower = more similar)"
+    )
+    
+    # Optional result summary
+    decision: Optional[str] = None
+    risk_score: Optional[int] = None
+
+    model_config = {"from_attributes": True}
+
+
+class SimilarFacesListResponse(BaseModel):
+    """Response for similar faces endpoint."""
+
+    source_session_id: UUID
+    threshold: float
+    matches: list[SimilarFaceResponse]
+    total_matches: int
 
 
 

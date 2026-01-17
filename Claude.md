@@ -131,6 +131,11 @@ Copy `env.example` to `.env` and configure:
 | `USE_MODAL` | `false` | Enable Modal GPU backend |
 | `CORS_ORIGINS` | `["http://localhost:3000"]` | Allowed CORS origins |
 | `BACKEND_API_KEY` | `` | Optional API auth key |
+| `SCORING_PROFILE` | `default` | Scoring profile (default, fintech_high_risk, crypto_exchange, social_verification) |
+| `VELOCITY_DEVICE_1H_LIMIT` | `3` | Max submissions per device per hour |
+| `VELOCITY_DEVICE_24H_LIMIT` | `10` | Max submissions per device per 24 hours |
+| `VELOCITY_IP_1H_LIMIT` | `5` | Max submissions per IP per hour |
+| `VELOCITY_IP_24H_LIMIT` | `20` | Max submissions per IP per 24 hours |
 
 ## Code Conventions
 
@@ -167,8 +172,9 @@ Copy `env.example` to `.env` and configure:
 | `backend/app/detection/face_analyzer.py` | InsightFace wrapper |
 | `backend/app/detection/document_analyzer.py` | PaddleOCR wrapper |
 | `backend/app/detection/pad_heuristics.py` | OpenCV-based PAD signals |
-| `backend/app/services/scoring.py` | Risk score computation |
+| `backend/app/services/scoring.py` | Risk score computation with configurable profiles |
 | `backend/app/services/reason_codes.py` | Reason code definitions |
+| `backend/app/services/fraud_detection.py` | Velocity rules & geo anomaly detection |
 | `frontend/app/api/[...path]/route.ts` | Backend proxy |
 | `frontend/lib/api.ts` | API client functions |
 | `frontend/lib/errors.ts` | Error parsing and user-friendly messages |
@@ -246,16 +252,35 @@ Detection modules emit explainable reason codes:
 | Doc | `DOC_MRZ_MISMATCH` | warn | MRZ data doesn't match OCR text |
 | Doc | `DOC_METADATA_SUSPICIOUS` | warn | EXIF shows editing software or date mismatch |
 | Doc | `DOC_BARCODE_MISMATCH` | warn | Barcode data doesn't match document text |
+| Doc | `DOC_ELA_MANIPULATION` | warn | Error Level Analysis detects image editing |
+| Doc | `DOC_COPY_MOVE_DETECTED` | high | Copy-move forgery detected |
+| Face | `FACE_AGE_DISCREPANCY` | warn | Apparent age differs significantly from ID DOB |
+| PAD | `PAD_VIRTUAL_CAMERA` | high | Virtual camera software detected (OBS, ManyCam, etc.) |
+| PAD | `PAD_LIP_SYNC_MISMATCH` | high | Lip movement doesn't match audio |
+| Fraud | `FRAUD_HIGH_VELOCITY` | warn | High submission rate from device/IP |
+| Fraud | `FRAUD_GEO_MISMATCH` | warn | Document country differs from device location |
+| Fraud | `FRAUD_SIMILAR_FACE` | warn | Similar face found in other sessions |
 
 ### Scoring Logic
 
+Scoring uses configurable profiles defined in `backend/app/services/scoring.py`:
+
 ```python
-risk_score = 0.45 * (1 - face_similarity) + 0.35 * pad_score + 0.20 * doc_score
+# Available profiles (set via SCORING_PROFILE env var)
+SCORING_PROFILES = {
+    "default":             ScoringConfig(0.45, 0.35, 0.20, fail=70, review=40),
+    "fintech_high_risk":   ScoringConfig(0.50, 0.35, 0.15, fail=60, review=35),
+    "crypto_exchange":     ScoringConfig(0.40, 0.40, 0.20, fail=55, review=30),
+    "social_verification": ScoringConfig(0.60, 0.25, 0.15, fail=70, review=45),
+}
+
+# Default scoring formula
+risk_score = face_weight * (1 - face_similarity) + pad_weight * pad_score + doc_weight * doc_score
 # Scaled to 0-100
 
 if any high severity reasons: decision = "fail"
-elif risk_score >= 70: decision = "fail"
-elif risk_score >= 40: decision = "review"
+elif risk_score >= fail_threshold: decision = "fail"
+elif risk_score >= review_threshold: decision = "review"
 else: decision = "pass"
 ```
 
@@ -369,6 +394,28 @@ alembic downgrade -1
 
 26. ~~**Vercel Analytics**~~: Added `@vercel/analytics` for automatic page view tracking. Analytics component added to root layout.
 
+### Phase 2: Risk Scoring Calibration, Fraud Pattern Intelligence, Detection Improvements (COMPLETED)
+
+27. ~~**Configurable Risk Scoring**~~: Added `ScoringConfig` and `ScoringProfile` enum with 4 preset profiles (DEFAULT, FINTECH_HIGH_RISK, CRYPTO_EXCHANGE, SOCIAL_VERIFICATION). Each profile has configurable weights (face, PAD, doc) and thresholds (fail, review). Profiles selectable via `SCORING_PROFILE` environment variable.
+
+28. ~~**Enhanced Similar Face Search**~~: Updated `GET /sessions/{id}/similar` endpoint with `threshold` parameter (0-1, default 0.7) for fraud ring detection. Response now includes similarity scores and distance for each match.
+
+29. ~~**Virtual Camera Detection**~~: Added detection for virtual camera software (OBS, ManyCam, Snap Camera, XSplit, CamTwist, etc.) by analyzing video metadata. New `detect_virtual_camera()` method in PAD analyzer. Emits `PAD_VIRTUAL_CAMERA` reason code.
+
+30. ~~**Audio Liveness (Lip Sync)**~~: Added `analyze_lip_sync()` to PAD analyzer for video submissions with audio. Correlates lip aperture motion with audio energy. Poor correlation suggests pre-recorded video or audio injection. Emits `PAD_LIP_SYNC_MISMATCH`.
+
+31. ~~**Fraud Detection Service**~~: Created `backend/app/services/fraud_detection.py` with velocity rules (`check_velocity()`) and geographic anomaly detection (`check_geo_anomaly()`). Tracks submissions per device/IP within configurable time windows.
+
+32. ~~**Database Migration for Fraud Detection**~~: Added `003_fraud_detection.py` migration with new columns: `device_fingerprint`, `client_ip`, `device_timezone`. Created indexes for efficient velocity queries.
+
+33. ~~**Multi-language OCR**~~: Extended `DocumentAnalyzer` to support 50+ languages via `lang` parameter. OCR instances cached per language. Supports Latin, Asian, Cyrillic, Arabic scripts.
+
+34. ~~**Error Level Analysis (ELA)**~~: Added `compute_ela()` and `detect_ela_manipulation()` to `DocumentAnalyzer` for detecting Photoshopped regions. Re-compresses image and compares error levels to find manipulated areas. Emits `DOC_ELA_MANIPULATION`.
+
+35. ~~**Age Estimation**~~: Added `AgeEstimation` dataclass and age extraction from InsightFace. New `check_age_discrepancy()` method compares estimated age with ID DOB. Emits `FACE_AGE_DISCREPANCY` when difference exceeds tolerance (default 10 years).
+
+36. ~~**New Reason Codes**~~: Added 9 new reason codes for Phase 2 features: `FACE_AGE_DISCREPANCY`, `PAD_VIRTUAL_CAMERA`, `PAD_LIP_SYNC_MISMATCH`, `DOC_ELA_MANIPULATION`, `DOC_COPY_MOVE_DETECTED`, `FRAUD_HIGH_VELOCITY`, `FRAUD_GEO_MISMATCH`, `FRAUD_SIMILAR_FACE`.
+
 ---
 
 ### Medium Priority
@@ -421,11 +468,12 @@ See `docs/deployment.md` for full details:
 
 | Dependency | Note |
 |------------|------|
-| PaddleOCR | v2.8+ uses new `predict()` API. Code updated for this. |
-| InsightFace | Uses ONNX Runtime. GPU requires `onnxruntime-gpu`. |
-| pgvector | Requires PostgreSQL extension enabled in production. |
+| PaddleOCR | v2.8+ uses new `predict()` API. Supports 50+ languages via `lang` parameter. |
+| InsightFace | Uses ONNX Runtime. GPU requires `onnxruntime-gpu`. Age estimation requires buffalo_l model. |
+| pgvector | Requires PostgreSQL extension enabled in production. Used for face similarity search. |
 | Next.js | Currently on v16.x. App Router is stable. |
 | Modal | API changes frequently. Use `modal.Function.from_name()` for deployed functions. |
+| OpenCV | Used for PAD heuristics, ELA analysis, and lip sync detection. |
 
 ## Keyboard Shortcuts
 

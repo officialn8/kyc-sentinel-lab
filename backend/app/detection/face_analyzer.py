@@ -9,16 +9,31 @@ Responsibilities:
 - Flag multiple faces or no face detected
 - Compute face quality scores for adaptive thresholds
 - Estimate pose angle from facial landmarks
+- Estimate age and detect discrepancies with ID DOB
 """
 
 import numpy as np
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Optional
 
 import cv2
 
 # InsightFace imports - lazy loaded to avoid slow startup
 _insightface_app = None
+
+
+@dataclass
+class AgeEstimation:
+    """Result of age estimation from face image."""
+    
+    estimated_age: int
+    # Confidence interval for age (min, max)
+    age_range: tuple[int, int]
+    # Confidence score (0-1)
+    confidence: float
+    # Whether age estimation is reliable
+    is_reliable: bool = True
 
 
 @dataclass
@@ -53,6 +68,18 @@ class FaceDetection:
     landmarks: np.ndarray  # 5-point landmarks
     crop: np.ndarray  # Face crop image
     quality: Optional[FaceQuality] = None  # Quality metrics
+    age_estimation: Optional[AgeEstimation] = None  # Phase 2: Age estimation
+
+
+@dataclass
+class AgeDiscrepancyResult:
+    """Result of age discrepancy check between estimated age and DOB."""
+    
+    estimated_age: int
+    age_from_dob: int
+    difference_years: int
+    is_discrepant: bool
+    tolerance_years: int = 10
 
 
 @dataclass
@@ -70,6 +97,10 @@ class FaceAnalysisResult:
     # Quality scores
     selfie_quality: Optional[FaceQuality] = None
     id_quality: Optional[FaceQuality] = None
+    # Phase 2: Age estimation
+    selfie_age: Optional[AgeEstimation] = None
+    id_age: Optional[AgeEstimation] = None
+    age_discrepancy: Optional[AgeDiscrepancyResult] = None
 
 
 class FaceAnalyzer:
@@ -278,6 +309,9 @@ class FaceAnalyzer:
                 det_score=float(face.det_score),
                 source=source,
             )
+            
+            # Phase 2: Extract age estimation if available
+            age_estimation = self._extract_age_estimation(face)
 
             detections.append(
                 FaceDetection(
@@ -287,6 +321,7 @@ class FaceAnalyzer:
                     landmarks=face.kps,
                     crop=crop,
                     quality=quality,
+                    age_estimation=age_estimation,
                 )
             )
 
@@ -611,6 +646,170 @@ class FaceAnalyzer:
         Alias for analyze() for backward compatibility.
         """
         return self.analyze(selfie_image, id_image)
+
+    # === PHASE 2: AGE ESTIMATION ===
+
+    def _extract_age_estimation(self, face) -> Optional[AgeEstimation]:
+        """Extract age estimation from InsightFace face object.
+        
+        InsightFace's analysis models can provide age estimation.
+        The 'age' attribute is available when using models that include
+        age prediction (e.g., buffalo_l includes this).
+        
+        Args:
+            face: InsightFace Face object
+            
+        Returns:
+            AgeEstimation or None if not available
+        """
+        try:
+            # Check if face has age attribute
+            if hasattr(face, 'age') and face.age is not None:
+                age = int(face.age)
+                
+                # InsightFace age estimation typically has ~5-7 year error margin
+                # Provide a reasonable confidence interval
+                age_error_margin = 6
+                age_range = (max(0, age - age_error_margin), age + age_error_margin)
+                
+                # Confidence based on detection score (proxy for image quality)
+                confidence = min(float(face.det_score), 1.0) * 0.8
+                
+                return AgeEstimation(
+                    estimated_age=age,
+                    age_range=age_range,
+                    confidence=confidence,
+                    is_reliable=confidence >= 0.5,
+                )
+            
+            return None
+            
+        except Exception:
+            return None
+
+    def estimate_age(self, image: np.ndarray) -> Optional[AgeEstimation]:
+        """Estimate age from a face image.
+        
+        Args:
+            image: BGR image containing a face
+            
+        Returns:
+            AgeEstimation or None if no face detected
+        """
+        detections = self._detect_faces(image, "age_estimate")
+        
+        if not detections:
+            return None
+        
+        # Use highest confidence face
+        best_face = max(detections, key=lambda f: f.confidence)
+        return best_face.age_estimation
+
+    def check_age_discrepancy(
+        self,
+        estimated_age: int,
+        dob: date,
+        tolerance_years: int = 10,
+        reference_date: Optional[date] = None,
+    ) -> AgeDiscrepancyResult:
+        """Check if estimated age differs significantly from DOB.
+        
+        Useful for detecting fraudulent ID documents where the
+        photo doesn't match the stated date of birth.
+        
+        Args:
+            estimated_age: Age estimated from face image
+            dob: Date of birth from ID document
+            tolerance_years: Maximum acceptable difference (default 10 years)
+            reference_date: Date to calculate age from (defaults to today)
+            
+        Returns:
+            AgeDiscrepancyResult with comparison details
+        """
+        if reference_date is None:
+            reference_date = date.today()
+        
+        # Calculate actual age from DOB
+        age_from_dob = reference_date.year - dob.year
+        
+        # Adjust if birthday hasn't occurred this year
+        if (reference_date.month, reference_date.day) < (dob.month, dob.day):
+            age_from_dob -= 1
+        
+        difference = abs(estimated_age - age_from_dob)
+        is_discrepant = difference > tolerance_years
+        
+        return AgeDiscrepancyResult(
+            estimated_age=estimated_age,
+            age_from_dob=age_from_dob,
+            difference_years=difference,
+            is_discrepant=is_discrepant,
+            tolerance_years=tolerance_years,
+        )
+
+    def analyze_with_age_check(
+        self,
+        selfie_image: np.ndarray,
+        id_image: np.ndarray,
+        dob: Optional[date] = None,
+        age_tolerance_years: int = 10,
+    ) -> FaceAnalysisResult:
+        """Analyze faces with optional age discrepancy check.
+        
+        Extended version of analyze() that also checks if the
+        estimated age matches the DOB from the ID document.
+        
+        Args:
+            selfie_image: Selfie image (BGR)
+            id_image: ID document image (BGR)
+            dob: Optional date of birth from ID for age verification
+            age_tolerance_years: Maximum acceptable age difference
+            
+        Returns:
+            FaceAnalysisResult with age estimation and discrepancy check
+        """
+        # Run standard analysis
+        result = self.analyze(selfie_image, id_image)
+        
+        # Extract age estimates
+        selfie_age = None
+        id_age = None
+        
+        if result.selfie_faces:
+            best_selfie = max(result.selfie_faces, key=lambda f: f.confidence)
+            selfie_age = best_selfie.age_estimation
+            result.selfie_age = selfie_age
+            
+            if selfie_age:
+                result.evidence["selfie_estimated_age"] = selfie_age.estimated_age
+                result.evidence["selfie_age_range"] = selfie_age.age_range
+        
+        if result.id_faces:
+            best_id = max(result.id_faces, key=lambda f: f.confidence)
+            id_age = best_id.age_estimation
+            result.id_age = id_age
+            
+            if id_age:
+                result.evidence["id_estimated_age"] = id_age.estimated_age
+                result.evidence["id_age_range"] = id_age.age_range
+        
+        # Check age discrepancy if DOB provided
+        if dob and selfie_age and selfie_age.is_reliable:
+            discrepancy = self.check_age_discrepancy(
+                estimated_age=selfie_age.estimated_age,
+                dob=dob,
+                tolerance_years=age_tolerance_years,
+            )
+            result.age_discrepancy = discrepancy
+            
+            result.evidence["age_from_dob"] = discrepancy.age_from_dob
+            result.evidence["age_difference_years"] = discrepancy.difference_years
+            result.evidence["age_tolerance_years"] = age_tolerance_years
+            
+            if discrepancy.is_discrepant:
+                result.reason_codes.append("FACE_AGE_DISCREPANCY")
+        
+        return result
 
 
 # Singleton instance for reuse (model loading is expensive)

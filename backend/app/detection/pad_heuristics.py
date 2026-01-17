@@ -65,6 +65,67 @@ class BlinkAnalysis:
 
 
 @dataclass
+class VirtualCameraResult:
+    """Result of virtual camera detection analysis."""
+    
+    detected: bool
+    software_name: Optional[str] = None
+    confidence: float = 0.0
+    matched_signatures: list[str] = field(default_factory=list)
+    metadata_analyzed: dict = field(default_factory=dict)
+
+
+@dataclass
+class LipSyncResult:
+    """Result of lip sync analysis for audio liveness."""
+    
+    has_audio: bool
+    lip_audio_correlation: float  # 0-1, higher = better sync
+    avg_lip_aperture: float
+    audio_energy_peaks: int
+    lip_motion_peaks: int
+    is_synchronized: bool
+    confidence: float
+
+
+# Known virtual camera software signatures
+VIRTUAL_CAMERA_SIGNATURES = [
+    # OBS Studio virtual camera
+    "OBS Virtual Camera",
+    "OBS-Camera",
+    "obs-virtualcam",
+    # ManyCam
+    "ManyCam",
+    "ManyCam Virtual Webcam",
+    # Snap Camera
+    "Snap Camera",
+    "Snap Inc",
+    # XSplit
+    "XSplit VCam",
+    "XSplit Broadcaster",
+    # Other virtual cameras
+    "CamTwist",
+    "Logi Capture",
+    "Logitech Capture",
+    "NDI Video",
+    "SplitCam",
+    "Streamlabs",
+    "e2eSoft VCam",
+    "YouCam",
+    "CyberLink YouCam",
+    "DroidCam",
+    "EpocCam",
+    "iVCam",
+    "Camo",
+    "mmhmm",
+    # Screen capture tools that can act as cameras
+    "ScreenCapture",
+    "Screen Capture",
+    "Desktop Capture",
+]
+
+
+@dataclass
 class PADResult:
     """Result of PAD analysis."""
 
@@ -78,6 +139,10 @@ class PADResult:
     blink_analysis: Optional[BlinkAnalysis] = None
     texture_analysis: Optional[dict] = None
     
+    # Phase 2: Virtual camera and lip sync analysis
+    virtual_camera_result: Optional[VirtualCameraResult] = None
+    lip_sync_result: Optional[LipSyncResult] = None
+    
     # Backward compatible fields
     pad_score: float = 0.0
     replay_suspected: bool = False
@@ -87,6 +152,8 @@ class PADResult:
     face_boundary_mismatch: bool = False
     no_blinks_detected: bool = False
     printed_texture_detected: bool = False
+    virtual_camera_detected: bool = False
+    lip_sync_mismatch: bool = False
     suspicious_frames: list[int] = None
     artifacts_detected: list[str] = None
 
@@ -101,6 +168,8 @@ class PADResult:
         self.frame_stutter = "PAD_FRAME_STUTTER" in self.reason_codes
         self.no_blinks_detected = "PAD_NO_BLINK_DETECTED" in self.reason_codes
         self.printed_texture_detected = "PAD_PRINTED_TEXTURE" in self.reason_codes
+        self.virtual_camera_detected = "PAD_VIRTUAL_CAMERA" in self.reason_codes
+        self.lip_sync_mismatch = "PAD_LIP_SYNC_MISMATCH" in self.reason_codes
 
 
 class PADAnalyzer:
@@ -1058,6 +1127,310 @@ class PADAnalyzer:
         score = min((sharpness_ratio - 1.5) / 2, 1.0)
         
         return max(0.0, score)
+
+    # === PHASE 2: VIRTUAL CAMERA DETECTION ===
+
+    def detect_virtual_camera(
+        self,
+        video_metadata: dict,
+    ) -> VirtualCameraResult:
+        """Detect virtual camera software from video metadata.
+        
+        Virtual cameras (OBS, ManyCam, Snap Camera, etc.) are commonly used
+        in injection attacks where pre-recorded or synthetic video is fed
+        to the verification system.
+        
+        Args:
+            video_metadata: Dictionary containing video stream metadata.
+                Expected keys: 'device_name', 'encoder', 'software',
+                'handler_name', 'vendor_id', 'product_name'
+        
+        Returns:
+            VirtualCameraResult with detection outcome
+        """
+        matched_signatures: list[str] = []
+        detected = False
+        software_name = None
+        confidence = 0.0
+        
+        # Fields to check in metadata
+        fields_to_check = [
+            'device_name',
+            'encoder',
+            'software',
+            'handler_name',
+            'vendor_id',
+            'product_name',
+            'camera_name',
+            'source_name',
+            'writing_application',
+            'writing_library',
+            'comment',
+            'title',
+        ]
+        
+        # Normalize metadata keys to lowercase for matching
+        normalized_metadata = {
+            k.lower(): str(v).strip()
+            for k, v in video_metadata.items()
+            if v is not None
+        }
+        
+        # Check each signature against each metadata field
+        for signature in VIRTUAL_CAMERA_SIGNATURES:
+            sig_lower = signature.lower()
+            for field_key in fields_to_check:
+                if field_key.lower() in normalized_metadata:
+                    field_value = normalized_metadata[field_key.lower()].lower()
+                    if sig_lower in field_value:
+                        matched_signatures.append(f"{field_key}:{signature}")
+                        detected = True
+                        if software_name is None:
+                            software_name = signature
+        
+        # Additional heuristics for suspicious patterns
+        suspicious_patterns = [
+            "virtual",
+            "vcam",
+            "v-cam",
+            "fake",
+            "synthetic",
+            "stream",
+            "broadcast",
+            "capture",
+        ]
+        
+        for field_key, field_value in normalized_metadata.items():
+            for pattern in suspicious_patterns:
+                if pattern in field_value.lower():
+                    # Check if it's not a legitimate camera with "capture" in name
+                    if pattern == "capture" and any(
+                        legit in field_value.lower()
+                        for legit in ["iphone", "android", "samsung", "google", "pixel"]
+                    ):
+                        continue
+                    matched_signatures.append(f"{field_key}:pattern:{pattern}")
+        
+        # Calculate confidence based on number of matches
+        if detected:
+            confidence = min(len(matched_signatures) * 0.3, 1.0)
+        elif matched_signatures:
+            # Suspicious patterns but not definitive
+            confidence = min(len(matched_signatures) * 0.15, 0.5)
+            detected = len(matched_signatures) >= 3
+        
+        return VirtualCameraResult(
+            detected=detected,
+            software_name=software_name,
+            confidence=confidence,
+            matched_signatures=matched_signatures,
+            metadata_analyzed=dict(normalized_metadata),
+        )
+
+    def analyze_with_metadata(
+        self,
+        frames: list[np.ndarray],
+        video_metadata: Optional[dict] = None,
+        facial_landmarks: Optional[list[np.ndarray]] = None,
+    ) -> PADResult:
+        """Analyze video frames with optional metadata for virtual camera detection.
+        
+        Extended version of analyze_frames that also checks video metadata
+        for virtual camera signatures.
+        
+        Args:
+            frames: List of BGR frame arrays
+            video_metadata: Optional video stream metadata dict
+            facial_landmarks: Optional list of 68-point facial landmarks per frame
+        
+        Returns:
+            PADResult with comprehensive analysis including virtual camera check
+        """
+        # Run standard frame analysis
+        result = self.analyze_frames(frames, facial_landmarks)
+        
+        # Check for virtual camera if metadata provided
+        virtual_camera_result = None
+        if video_metadata:
+            virtual_camera_result = self.detect_virtual_camera(video_metadata)
+            
+            if virtual_camera_result.detected:
+                result.reason_codes.append("PAD_VIRTUAL_CAMERA")
+                result.evidence["virtual_camera_software"] = virtual_camera_result.software_name
+                result.evidence["virtual_camera_confidence"] = virtual_camera_result.confidence
+                result.evidence["virtual_camera_signatures"] = virtual_camera_result.matched_signatures
+                
+                # Boost PAD score for virtual camera detection
+                result.overall_pad_score = max(result.overall_pad_score, 0.7)
+                result.pad_score = result.overall_pad_score
+        
+        # Store virtual camera result
+        result.virtual_camera_result = virtual_camera_result
+        
+        # Re-run __post_init__ to update backward-compatible fields
+        result.__post_init__()
+        
+        return result
+
+    # === PHASE 2: LIP SYNC ANALYSIS ===
+
+    def analyze_lip_sync(
+        self,
+        frames: list[np.ndarray],
+        audio_path: Optional[str] = None,
+        facial_landmarks: Optional[list[np.ndarray]] = None,
+        fps: float = 30.0,
+    ) -> LipSyncResult:
+        """Analyze lip movement correlation with audio for liveness detection.
+        
+        For video submissions with audio, this checks if lip movements
+        correlate with audio patterns. Mismatches indicate pre-recorded
+        video or audio injection.
+        
+        Args:
+            frames: List of BGR frame arrays
+            audio_path: Path to extracted audio file (WAV format)
+            facial_landmarks: 68-point facial landmarks per frame
+            fps: Video frame rate
+        
+        Returns:
+            LipSyncResult with correlation analysis
+        """
+        # Default result for no audio
+        if audio_path is None:
+            return LipSyncResult(
+                has_audio=False,
+                lip_audio_correlation=0.0,
+                avg_lip_aperture=0.0,
+                audio_energy_peaks=0,
+                lip_motion_peaks=0,
+                is_synchronized=False,
+                confidence=0.0,
+            )
+        
+        try:
+            import wave
+            
+            # Read audio file
+            with wave.open(audio_path, 'rb') as wav_file:
+                n_channels = wav_file.getnchannels()
+                sample_width = wav_file.getsampwidth()
+                sample_rate = wav_file.getframerate()
+                n_frames = wav_file.getnframes()
+                
+                audio_data = wav_file.readframes(n_frames)
+                audio_array = np.frombuffer(audio_data, dtype=np.int16)
+                
+                # Convert to mono if stereo
+                if n_channels == 2:
+                    audio_array = audio_array.reshape(-1, 2).mean(axis=1)
+            
+            # Compute audio energy per frame
+            samples_per_frame = int(sample_rate / fps)
+            audio_energy = []
+            
+            for i in range(len(frames)):
+                start_sample = i * samples_per_frame
+                end_sample = min(start_sample + samples_per_frame, len(audio_array))
+                
+                if start_sample < len(audio_array):
+                    frame_audio = audio_array[start_sample:end_sample]
+                    energy = np.sqrt(np.mean(frame_audio.astype(float) ** 2))
+                    audio_energy.append(energy)
+                else:
+                    audio_energy.append(0.0)
+            
+            audio_energy = np.array(audio_energy)
+            
+            # Compute lip aperture from landmarks
+            lip_apertures = []
+            
+            if facial_landmarks:
+                for i, landmarks in enumerate(facial_landmarks):
+                    if landmarks is not None and len(landmarks) >= 68:
+                        # Lip landmarks: outer (48-59), inner (60-67)
+                        # Vertical aperture: distance between upper and lower lip centers
+                        upper_lip = landmarks[62]  # Top of inner upper lip
+                        lower_lip = landmarks[66]  # Bottom of inner lower lip
+                        aperture = np.linalg.norm(upper_lip - lower_lip)
+                        lip_apertures.append(aperture)
+                    else:
+                        lip_apertures.append(0.0)
+            else:
+                # No landmarks - can't compute lip sync
+                return LipSyncResult(
+                    has_audio=True,
+                    lip_audio_correlation=0.0,
+                    avg_lip_aperture=0.0,
+                    audio_energy_peaks=0,
+                    lip_motion_peaks=0,
+                    is_synchronized=False,
+                    confidence=0.0,
+                )
+            
+            lip_apertures = np.array(lip_apertures)
+            
+            if len(lip_apertures) < 5 or len(audio_energy) < 5:
+                return LipSyncResult(
+                    has_audio=True,
+                    lip_audio_correlation=0.0,
+                    avg_lip_aperture=float(np.mean(lip_apertures)) if len(lip_apertures) > 0 else 0.0,
+                    audio_energy_peaks=0,
+                    lip_motion_peaks=0,
+                    is_synchronized=False,
+                    confidence=0.0,
+                )
+            
+            # Normalize signals
+            audio_norm = (audio_energy - np.mean(audio_energy)) / (np.std(audio_energy) + 1e-7)
+            lip_norm = (lip_apertures - np.mean(lip_apertures)) / (np.std(lip_apertures) + 1e-7)
+            
+            # Truncate to same length
+            min_len = min(len(audio_norm), len(lip_norm))
+            audio_norm = audio_norm[:min_len]
+            lip_norm = lip_norm[:min_len]
+            
+            # Compute cross-correlation
+            correlation = np.corrcoef(audio_norm, lip_norm)[0, 1]
+            if np.isnan(correlation):
+                correlation = 0.0
+            
+            # Count energy peaks
+            audio_threshold = np.mean(audio_energy) + np.std(audio_energy)
+            lip_threshold = np.mean(lip_apertures) + np.std(lip_apertures) * 0.5
+            
+            audio_peaks = np.sum(audio_energy > audio_threshold)
+            lip_peaks = np.sum(lip_apertures > lip_threshold)
+            
+            # Determine if synchronized
+            # Good sync: correlation > 0.3 and similar peak counts
+            peak_ratio = min(audio_peaks, lip_peaks) / max(audio_peaks, lip_peaks, 1)
+            is_synchronized = correlation > 0.3 and peak_ratio > 0.3
+            
+            # Confidence based on correlation strength and data quality
+            confidence = abs(correlation) * 0.7 + peak_ratio * 0.3
+            
+            return LipSyncResult(
+                has_audio=True,
+                lip_audio_correlation=float(correlation),
+                avg_lip_aperture=float(np.mean(lip_apertures)),
+                audio_energy_peaks=int(audio_peaks),
+                lip_motion_peaks=int(lip_peaks),
+                is_synchronized=is_synchronized,
+                confidence=float(confidence),
+            )
+            
+        except Exception as e:
+            # Audio processing failed
+            return LipSyncResult(
+                has_audio=False,
+                lip_audio_correlation=0.0,
+                avg_lip_aperture=0.0,
+                audio_energy_peaks=0,
+                lip_motion_peaks=0,
+                is_synchronized=False,
+                confidence=0.0,
+            )
 
 
 # Singleton

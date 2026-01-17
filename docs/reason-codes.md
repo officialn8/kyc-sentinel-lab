@@ -19,6 +19,10 @@ Reason codes provide explainable, auditable justifications for detection decisio
 | `FACE_NOT_DETECTED_SELFIE` | high | No face detected in selfie image |
 | `FACE_NOT_DETECTED_ID` | high | No face detected in ID document |
 | `MULTIPLE_FACES_SELFIE` | warn | Multiple faces detected in selfie |
+| `FACE_LOW_QUALITY_SELFIE` | warn | Selfie image quality too low for reliable matching |
+| `FACE_LOW_QUALITY_ID` | warn | ID photo quality too low for reliable matching |
+| `FACE_EXTREME_POSE` | warn | Face pose angle too extreme for reliable matching |
+| `FACE_AGE_DISCREPANCY` | warn | Apparent age differs significantly from ID DOB |
 
 ### Evidence Fields
 
@@ -41,6 +45,11 @@ Reason codes provide explainable, auditable justifications for detection decisio
 | `PAD_FRAME_STUTTER` | warn | Inconsistent frame timing (video replay) |
 | `PAD_INJECTION_ARTIFACTS` | high | Virtual camera injection artifacts |
 | `PAD_FACE_BOUNDARY_MISMATCH` | high | Face boundary inconsistent (face swap) |
+| `PAD_NO_BLINK_DETECTED` | warn | No natural eye blinks detected in video |
+| `PAD_PRINTED_TEXTURE` | high | Skin texture suggests printed photo |
+| `PAD_FLAT_DEPTH` | high | Depth analysis indicates flat surface |
+| `PAD_VIRTUAL_CAMERA` | high | Virtual camera software detected (OBS, ManyCam, etc.) |
+| `PAD_LIP_SYNC_MISMATCH` | high | Lip movement doesn't match audio |
 
 ### Evidence Fields
 
@@ -63,7 +72,12 @@ Reason codes provide explainable, auditable justifications for detection decisio
 | `DOC_FONT_INCONSISTENT` | warn | Inconsistent fonts in document text |
 | `DOC_TEXT_MISALIGNED` | warn | Text alignment issues |
 | `DOC_EDGE_ARTIFACTS` | warn | Editing artifacts around edges |
-| `DOC_METADATA_SUSPICIOUS` | info | Suspicious image metadata |
+| `DOC_METADATA_SUSPICIOUS` | warn | Suspicious image metadata (editing software detected) |
+| `DOC_MRZ_INVALID` | high | MRZ check digits are invalid |
+| `DOC_MRZ_MISMATCH` | warn | MRZ data doesn't match OCR text |
+| `DOC_BARCODE_MISMATCH` | warn | Barcode data doesn't match document text |
+| `DOC_ELA_MANIPULATION` | warn | Error Level Analysis suggests image editing |
+| `DOC_COPY_MOVE_DETECTED` | high | Copy-move forgery detected |
 
 ### Evidence Fields
 
@@ -94,6 +108,30 @@ Reason codes provide explainable, auditable justifications for detection decisio
   "ip_country": "XX",
   "session_duration_ms": 1200,
   "retry_count": 5
+}
+```
+
+## Fraud Pattern Detection (Phase 2)
+
+| Code | Severity | Description |
+|------|----------|-------------|
+| `FRAUD_HIGH_VELOCITY` | warn | High submission rate from same device/IP |
+| `FRAUD_GEO_MISMATCH` | warn | Document country differs from device location |
+| `FRAUD_SIMILAR_FACE` | warn | Similar face found in other sessions (fraud ring) |
+
+### Evidence Fields
+
+```json
+{
+  "device_submissions_1h": 5,
+  "device_submissions_24h": 12,
+  "ip_submissions_1h": 8,
+  "ip_submissions_24h": 25,
+  "velocity_flags": ["device_1h:5>=3", "ip_24h:25>=20"],
+  "doc_country": "US",
+  "device_country": "NG",
+  "similar_session_count": 3,
+  "highest_similarity": 0.92
 }
 ```
 

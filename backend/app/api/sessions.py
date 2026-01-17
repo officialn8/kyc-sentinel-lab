@@ -21,6 +21,8 @@ from app.schemas.session import (
     SessionListResponse,
     SessionDetail,
     PresignedUrlResponse,
+    SimilarFaceResponse,
+    SimilarFacesListResponse,
 )
 
 router = APIRouter()
@@ -81,6 +83,8 @@ async def create_session(
         device_os=data.device_os,
         device_model=data.device_model,
         ip_country=data.ip_country,
+        device_fingerprint=data.device_fingerprint,
+        device_timezone=data.device_timezone,
         status="pending",
     )
     db.add(session)
@@ -331,13 +335,32 @@ async def delete_session(
     return {"status": "deleted", "id": str(session_id)}
 
 
-@router.get("/{session_id}/similar", response_model=list[SessionResponse])
+@router.get("/{session_id}/similar", response_model=SimilarFacesListResponse)
 async def find_similar_sessions(
     session_id: UUID,
     db: DbSession,
+    threshold: float = Query(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Minimum similarity threshold (0-1, default 0.7 = 70% similar)",
+    ),
     limit: int = Query(default=10, ge=1, le=50),
-) -> list[SessionResponse]:
-    """Find sessions with similar face embeddings using pgvector."""
+) -> SimilarFacesListResponse:
+    """Find sessions with similar face embeddings using pgvector.
+    
+    This endpoint is useful for fraud ring detection - finding sessions
+    that may belong to the same person or use similar faces.
+    
+    Args:
+        session_id: Source session to find similar faces for
+        threshold: Minimum similarity score (0-1). Default 0.7 means
+            only return sessions with >= 70% face similarity.
+        limit: Maximum number of results to return
+    
+    Returns:
+        List of similar sessions with similarity scores
+    """
     session = await db.get(KYCSession, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -348,19 +371,63 @@ async def find_similar_sessions(
             detail="Session does not have a face embedding",
         )
 
-    # Use pgvector cosine distance for similarity search
+    # Cosine distance to similarity: similarity = 1 - distance
+    # So for threshold=0.7, we want distance < 0.3
+    max_distance = 1.0 - threshold
+
+    # Use pgvector cosine distance for similarity search with threshold filtering
+    # Select both the session and the computed distance for sorting/filtering
+    distance_expr = KYCSession.face_embedding.cosine_distance(session.face_embedding)
+    
     query = (
-        select(KYCSession)
+        select(
+            KYCSession,
+            distance_expr.label("distance"),
+        )
         .where(KYCSession.id != session_id)
         .where(KYCSession.face_embedding.isnot(None))
-        .order_by(KYCSession.face_embedding.cosine_distance(session.face_embedding))
+        .where(distance_expr < max_distance)  # Filter by threshold
+        .order_by(distance_expr)
         .limit(limit)
     )
 
     result = await db.execute(query)
-    similar = result.scalars().all()
+    rows = result.all()
 
-    return [SessionResponse.model_validate(s) for s in similar]
+    # Build response with similarity scores
+    matches: list[SimilarFaceResponse] = []
+    for row in rows:
+        similar_session = row[0]  # KYCSession object
+        distance = float(row[1])  # Cosine distance
+        similarity = 1.0 - distance
+        
+        # Get decision and risk score from result if exists
+        decision = None
+        risk_score = None
+        if similar_session.result:
+            decision = similar_session.result.decision
+            risk_score = similar_session.result.risk_score
+        
+        matches.append(
+            SimilarFaceResponse(
+                session_id=similar_session.id,
+                created_at=similar_session.created_at,
+                status=similar_session.status,
+                source=similar_session.source,
+                attack_family=similar_session.attack_family,
+                similarity_score=round(similarity, 4),
+                distance=round(distance, 4),
+                decision=decision,
+                risk_score=risk_score,
+            )
+        )
+
+    return SimilarFacesListResponse(
+        source_session_id=session_id,
+        threshold=threshold,
+        matches=matches,
+        total_matches=len(matches),
+    )
 
 
 

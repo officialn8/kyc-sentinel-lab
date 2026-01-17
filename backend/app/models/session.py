@@ -49,6 +49,17 @@ class KYCSession(Base):
     ip_country: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     capture_fps: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     resolution: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    
+    # Phase 2: Fraud detection fields
+    device_fingerprint: Mapped[Optional[str]] = mapped_column(
+        String(256), nullable=True, index=True
+    )  # Unique device identifier for velocity tracking
+    client_ip: Mapped[Optional[str]] = mapped_column(
+        String(45), nullable=True, index=True
+    )  # Client IP address (IPv6 max length = 45)
+    device_timezone: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True
+    )  # Client timezone (e.g., "America/New_York")
 
     # Asset references (R2 keys)
     selfie_asset_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
