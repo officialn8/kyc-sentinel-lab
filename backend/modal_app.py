@@ -45,7 +45,7 @@ app = modal.App("kyc-sentinel", image=gpu_image)
 r2_secret = modal.Secret.from_name("r2-credentials")
 
 
-@app.function(gpu="T4", timeout=300, secrets=[r2_secret])
+@app.function(gpu="T4", timeout=300, secrets=[r2_secret], memory=4096)
 def extract_frames(
     session_id: str,
     video_key: str,
@@ -148,7 +148,7 @@ def extract_frames(
         os_module.unlink(video_path)
 
 
-@app.function(gpu="T4", timeout=120)
+@app.function(gpu="T4", timeout=120, memory=8192)
 def analyze_face(
     selfie_url: str,
     id_url: str,
@@ -294,7 +294,7 @@ def analyze_face(
     }
 
 
-@app.function(gpu="T4", timeout=120)
+@app.function(gpu="T4", timeout=180, memory=16384)
 def analyze_document(
     id_url: str,
     min_confidence_threshold: float = 0.7,
