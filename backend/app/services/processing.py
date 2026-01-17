@@ -523,13 +523,13 @@ class ModalBackend:
         return self._storage
 
     def _get_modal_functions(self):
-        """Import Modal functions lazily to avoid import errors when Modal not installed."""
+        """Look up deployed Modal functions by name."""
         if self._modal_functions is None:
-            import modal_app
+            import modal
             self._modal_functions = {
-                "extract_frames": modal_app.extract_frames,
-                "analyze_face": modal_app.analyze_face,
-                "analyze_document": modal_app.analyze_document,
+                "extract_frames": modal.Function.lookup("kyc-sentinel", "extract_frames"),
+                "analyze_face": modal.Function.lookup("kyc-sentinel", "analyze_face"),
+                "analyze_document": modal.Function.lookup("kyc-sentinel", "analyze_document"),
             }
         return self._modal_functions
 
