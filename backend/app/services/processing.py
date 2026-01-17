@@ -527,9 +527,9 @@ class ModalBackend:
         if self._modal_functions is None:
             import modal
             self._modal_functions = {
-                "extract_frames": modal.Function.lookup("kyc-sentinel", "extract_frames"),
-                "analyze_face": modal.Function.lookup("kyc-sentinel", "analyze_face"),
-                "analyze_document": modal.Function.lookup("kyc-sentinel", "analyze_document"),
+                "extract_frames": modal.Function.from_name("kyc-sentinel", "extract_frames"),
+                "analyze_face": modal.Function.from_name("kyc-sentinel", "analyze_face"),
+                "analyze_document": modal.Function.from_name("kyc-sentinel", "analyze_document"),
             }
         return self._modal_functions
 
