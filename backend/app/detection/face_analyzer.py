@@ -95,12 +95,22 @@ class FaceAnalyzer:
         Returns:
             FaceAnalysisResult with detections, similarity, and reason codes
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         reason_codes: list[str] = []
         evidence: dict = {}
 
         # Detect faces
         selfie_detections = self._detect_faces(selfie_image, "selfie")
         id_detections = self._detect_faces(id_image, "id")
+        
+        # Debug logging
+        logger.info(f"Face detection: selfie has {len(selfie_detections)} face(s), ID has {len(id_detections)} face(s)")
+        for i, det in enumerate(selfie_detections):
+            logger.info(f"  Selfie face {i}: confidence={det.confidence:.3f}, bbox={det.bbox}")
+        for i, det in enumerate(id_detections):
+            logger.info(f"  ID face {i}: confidence={det.confidence:.3f}, bbox={det.bbox}")
 
         # Check for missing faces
         if not selfie_detections:
@@ -129,12 +139,17 @@ class FaceAnalyzer:
                 selfie_face.embedding, id_face.embedding
             )
             evidence["face_similarity"] = float(similarity)
+            
+            logger.info(f"Face comparison: selfie_conf={selfie_face.confidence:.3f}, id_conf={id_face.confidence:.3f}, similarity={similarity:.4f}")
 
             match = similarity >= self.similarity_threshold
 
             if not match:
                 reason_codes.append("FACE_MISMATCH")
                 evidence["similarity_threshold"] = self.similarity_threshold
+                logger.info(f"FACE_MISMATCH: similarity {similarity:.4f} < threshold {self.similarity_threshold}")
+            else:
+                logger.info(f"Face match: similarity {similarity:.4f} >= threshold {self.similarity_threshold}")
 
         return FaceAnalysisResult(
             selfie_faces=selfie_detections,
@@ -178,8 +193,21 @@ class FaceAnalyzer:
 
     def _compute_similarity(self, emb1: np.ndarray, emb2: np.ndarray) -> float:
         """Compute cosine similarity between two embeddings."""
-        # InsightFace embeddings are already normalized
-        return float(np.dot(emb1, emb2))
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Log embedding norms before normalization
+        norm1 = np.linalg.norm(emb1)
+        norm2 = np.linalg.norm(emb2)
+        logger.info(f"Embedding norms: selfie={norm1:.4f}, id={norm2:.4f}")
+        
+        # Normalize embeddings to unit vectors
+        emb1_norm = emb1 / norm1
+        emb2_norm = emb2 / norm2
+        # Cosine similarity is dot product of normalized vectors
+        similarity = float(np.dot(emb1_norm, emb2_norm))
+        # Clamp to valid range to handle floating point precision
+        return max(-1.0, min(1.0, similarity))
 
     def get_embedding(self, image: np.ndarray) -> Optional[np.ndarray]:
         """

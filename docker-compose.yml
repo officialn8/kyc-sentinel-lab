@@ -28,7 +28,7 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
       # CORS configuration for browser uploads
-      MINIO_CORS_ALLOW_ORIGIN: "http://localhost:3000"
+      MINIO_API_CORS_ALLOW_ORIGIN: "http://localhost:3000"
     ports:
       - "9000:9000"
       - "9001:9001"

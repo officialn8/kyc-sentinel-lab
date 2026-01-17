@@ -417,9 +417,87 @@ class LocalBackend:
     ) -> None:
         """Generate a synthetic session with attack artifacts.
         
-        TODO: Implement with simulator module for generating attack samples.
-        For now, processes the session normally.
+        Creates synthetic selfie and ID document images, applies attack artifacts
+        based on the specified attack family, uploads to storage, then runs
+        the normal detection pipeline.
+        
+        Args:
+            session_id: Session UUID
+            attack_family: One of: replay, injection, face_swap, doc_tamper, benign
+            attack_severity: One of: low, medium, high
         """
+        import sys
+        import os
+        
+        # Add simulator to path for imports
+        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        project_root = os.path.dirname(backend_dir)
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+        
+        from simulator.base_images import (
+            generate_synthetic_selfie,
+            generate_synthetic_id_document,
+            encode_image_to_jpeg,
+        )
+        from simulator.generator import ArtifactGenerator, AttackFamily, AttackSeverity
+        
+        from app.database import async_session_maker
+        from app.models.session import KYCSession
+        
+        # Initialize random generator for reproducibility
+        rng = np.random.default_rng()
+        
+        # 1. Generate base images
+        selfie_img = generate_synthetic_selfie(rng)
+        id_img = generate_synthetic_id_document(rng)
+        
+        # 2. Apply attack artifacts based on family
+        generator = ArtifactGenerator(seed=rng.integers(0, 2**31))
+        artifacts_applied = []
+        
+        if attack_family != "benign":
+            severity = AttackSeverity(attack_severity)
+            
+            # Apply to selfie for replay/injection/face_swap attacks
+            if attack_family in ("replay", "injection", "face_swap"):
+                artifact = generator.generate(
+                    selfie_img,
+                    AttackFamily(attack_family),
+                    severity,
+                )
+                selfie_img = artifact.image
+                artifacts_applied.extend(artifact.artifacts_applied)
+            
+            # Apply to ID for doc_tamper attacks
+            if attack_family == "doc_tamper":
+                artifact = generator.generate(
+                    id_img,
+                    AttackFamily.DOC_TAMPER,
+                    severity,
+                )
+                id_img = artifact.image
+                artifacts_applied.extend(artifact.artifacts_applied)
+        
+        # 3. Upload to storage
+        selfie_key = f"sessions/{session_id}/selfie.jpg"
+        id_key = f"sessions/{session_id}/id.jpg"
+        
+        selfie_bytes = encode_image_to_jpeg(selfie_img)
+        id_bytes = encode_image_to_jpeg(id_img)
+        
+        await self.storage.upload_file(selfie_key, selfie_bytes, "image/jpeg")
+        await self.storage.upload_file(id_key, id_bytes, "image/jpeg")
+        
+        # 4. Update session with asset keys
+        async with async_session_maker() as db:
+            session = await db.get(KYCSession, session_id)
+            if session:
+                session.selfie_asset_key = selfie_key
+                session.id_asset_key = id_key
+                await db.commit()
+        
+        # 5. Run normal processing pipeline
         await self.process_session(session_id)
 
 
@@ -645,8 +723,63 @@ class ModalBackend:
 
                 # Compute scores
                 face_similarity = face_result_raw.get("similarity") or 0.0
-                pad_score = 0.0  # PAD would need video frame analysis
                 doc_score = doc_result_raw.get("doc_score", 0.0)
+                
+                # PAD analysis for video
+                pad_score = 0.0
+                if is_video and frame_result.frame_keys:
+                    # Download extracted frames and run PAD analysis locally
+                    # (PAD is CPU-based, no need for Modal GPU)
+                    from app.detection.pad_heuristics import get_pad_analyzer
+                    from app.models.frame_metric import KYCFrameMetric
+                    
+                    pad_analyzer = get_pad_analyzer()
+                    frames = []
+                    
+                    for frame_key in frame_result.frame_keys:
+                        try:
+                            frame_bytes = await self.storage.download_file(frame_key)
+                            frame_img = cv2.imdecode(
+                                np.frombuffer(frame_bytes, np.uint8),
+                                cv2.IMREAD_COLOR
+                            )
+                            if frame_img is not None:
+                                frames.append(frame_img)
+                        except Exception:
+                            # Skip frames that fail to download
+                            continue
+                    
+                    if frames:
+                        pad_result = pad_analyzer.analyze_frames(frames)
+                        pad_score = pad_result.overall_pad_score
+                        
+                        # Add PAD reason codes
+                        for code in pad_result.reason_codes:
+                            reason_code = getattr(ReasonCode, code, None)
+                            if reason_code:
+                                reasons.append(
+                                    KYCReason(
+                                        session_id=session.id,
+                                        code=code,
+                                        severity=get_reason_severity(reason_code),
+                                        message=REASON_MESSAGES.get(reason_code, code),
+                                        evidence=pad_result.evidence,
+                                    )
+                                )
+                        
+                        # Save frame metrics
+                        for fm in pad_result.frame_metrics:
+                            db.add(
+                                KYCFrameMetric(
+                                    session_id=session.id,
+                                    frame_idx=fm.frame_idx,
+                                    motion_entropy=fm.motion_entropy,
+                                    sharpness=fm.sharpness,
+                                    noise_score=fm.noise_level,
+                                    color_shift=fm.color_temperature,
+                                    pad_flag=len(fm.pad_flags) > 0,
+                                )
+                            )
 
                 risk_score, decision = compute_risk_score(
                     face_similarity=face_similarity,
@@ -705,9 +838,87 @@ class ModalBackend:
     ) -> None:
         """Generate a synthetic session with attack artifacts.
         
-        TODO: Implement with simulator module for generating attack samples.
-        For now, processes the session normally.
+        Creates synthetic selfie and ID document images, applies attack artifacts
+        based on the specified attack family, uploads to storage, then runs
+        the Modal-based detection pipeline.
+        
+        Args:
+            session_id: Session UUID
+            attack_family: One of: replay, injection, face_swap, doc_tamper, benign
+            attack_severity: One of: low, medium, high
         """
+        import sys
+        import os
+        
+        # Add simulator to path for imports
+        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        project_root = os.path.dirname(backend_dir)
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+        
+        from simulator.base_images import (
+            generate_synthetic_selfie,
+            generate_synthetic_id_document,
+            encode_image_to_jpeg,
+        )
+        from simulator.generator import ArtifactGenerator, AttackFamily, AttackSeverity
+        
+        from app.database import async_session_maker
+        from app.models.session import KYCSession
+        
+        # Initialize random generator for reproducibility
+        rng = np.random.default_rng()
+        
+        # 1. Generate base images
+        selfie_img = generate_synthetic_selfie(rng)
+        id_img = generate_synthetic_id_document(rng)
+        
+        # 2. Apply attack artifacts based on family
+        generator = ArtifactGenerator(seed=rng.integers(0, 2**31))
+        artifacts_applied = []
+        
+        if attack_family != "benign":
+            severity = AttackSeverity(attack_severity)
+            
+            # Apply to selfie for replay/injection/face_swap attacks
+            if attack_family in ("replay", "injection", "face_swap"):
+                artifact = generator.generate(
+                    selfie_img,
+                    AttackFamily(attack_family),
+                    severity,
+                )
+                selfie_img = artifact.image
+                artifacts_applied.extend(artifact.artifacts_applied)
+            
+            # Apply to ID for doc_tamper attacks
+            if attack_family == "doc_tamper":
+                artifact = generator.generate(
+                    id_img,
+                    AttackFamily.DOC_TAMPER,
+                    severity,
+                )
+                id_img = artifact.image
+                artifacts_applied.extend(artifact.artifacts_applied)
+        
+        # 3. Upload to storage
+        selfie_key = f"sessions/{session_id}/selfie.jpg"
+        id_key = f"sessions/{session_id}/id.jpg"
+        
+        selfie_bytes = encode_image_to_jpeg(selfie_img)
+        id_bytes = encode_image_to_jpeg(id_img)
+        
+        await self.storage.upload_file(selfie_key, selfie_bytes, "image/jpeg")
+        await self.storage.upload_file(id_key, id_bytes, "image/jpeg")
+        
+        # 4. Update session with asset keys
+        async with async_session_maker() as db:
+            session = await db.get(KYCSession, session_id)
+            if session:
+                session.selfie_asset_key = selfie_key
+                session.id_asset_key = id_key
+                await db.commit()
+        
+        # 5. Run Modal processing pipeline
         await self.process_session(session_id)
 
 

@@ -4,7 +4,7 @@ import os
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
@@ -13,6 +13,7 @@ from app.api.security import rate_limiter
 from app.models.session import KYCSession
 from app.models.result import KYCResult
 from app.services.job_queue import enqueue_process_session
+from app.services.processing import get_processing_backend
 from app.schemas.session import (
     SessionCreate,
     SessionResponse,
@@ -139,6 +140,7 @@ async def create_session(
 async def finalize_session(
     session_id: UUID,
     db: DbSession,
+    background_tasks: BackgroundTasks,
     force: bool = False,
 ) -> dict:
     """Mark uploads complete and start processing.
@@ -162,8 +164,15 @@ async def finalize_session(
 
     # Update status
     session.status = "processing"
+    
+    # Also enqueue for worker-based processing (for production with separate worker)
     await enqueue_process_session(db, str(session_id))
     await db.commit()
+
+    # Run processing directly in background task (for local development)
+    # This runs in the same process, no separate worker needed
+    backend = get_processing_backend()
+    background_tasks.add_task(backend.process_session, str(session_id))
 
     return {"status": "processing", "message": "Session queued for processing"}
 

@@ -55,39 +55,32 @@ async function proxy(req: NextRequest, pathParts: string[]) {
   });
 }
 
-export async function GET(
-  req: NextRequest,
-  { params }: { params: { path: string[] } }
-) {
-  return proxy(req, params.path);
+// Next.js 16+: params is now a Promise that must be awaited
+type RouteContext = { params: Promise<{ path: string[] }> };
+
+export async function GET(req: NextRequest, { params }: RouteContext) {
+  const { path } = await params;
+  return proxy(req, path);
 }
 
-export async function POST(
-  req: NextRequest,
-  { params }: { params: { path: string[] } }
-) {
-  return proxy(req, params.path);
+export async function POST(req: NextRequest, { params }: RouteContext) {
+  const { path } = await params;
+  return proxy(req, path);
 }
 
-export async function PUT(
-  req: NextRequest,
-  { params }: { params: { path: string[] } }
-) {
-  return proxy(req, params.path);
+export async function PUT(req: NextRequest, { params }: RouteContext) {
+  const { path } = await params;
+  return proxy(req, path);
 }
 
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: { path: string[] } }
-) {
-  return proxy(req, params.path);
+export async function PATCH(req: NextRequest, { params }: RouteContext) {
+  const { path } = await params;
+  return proxy(req, path);
 }
 
-export async function DELETE(
-  req: NextRequest,
-  { params }: { params: { path: string[] } }
-) {
-  return proxy(req, params.path);
+export async function DELETE(req: NextRequest, { params }: RouteContext) {
+  const { path } = await params;
+  return proxy(req, path);
 }
 
 
