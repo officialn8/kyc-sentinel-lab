@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -220,7 +220,7 @@ function StandardSessionTable({ sessions }: VirtualizedSessionTableProps) {
   );
 }
 
-export default function SessionsPage() {
+function SessionsContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [page, setPage] = useState(1);
@@ -487,5 +487,27 @@ export default function SessionsPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function SessionsLoadingState() {
+  return (
+    <div className="space-y-6">
+      <Card className="glass">
+        <CardContent className="p-6">
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+export default function SessionsPage() {
+  return (
+    <Suspense fallback={<SessionsLoadingState />}>
+      <SessionsContent />
+    </Suspense>
   );
 }

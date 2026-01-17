@@ -5,18 +5,21 @@ Analyzes video frames for signs of:
 - Replay attacks (screen capture artifacts)
 - Injection attacks (unnatural image properties)
 - Face boundary anomalies
+- Lack of liveness signals (no blinks, static texture)
+- Printed photo detection (LBP texture analysis)
 
 These are heuristic-based signals, not learned models.
 They provide interpretable reason codes.
 """
 
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 from statistics import mean, stdev
 
 import cv2
 from scipy import fftpack
+from skimage.feature import local_binary_pattern
 
 
 @dataclass
@@ -30,6 +33,11 @@ class FrameMetrics:
     color_temperature: float
     moire_score: float
     pad_flags: list[str]
+    
+    # Liveness detection fields
+    eye_aspect_ratio: Optional[float] = None  # EAR for blink detection
+    blink_detected: bool = False
+    lbp_texture_score: float = 0.0  # 0-1, higher = more like real skin
     
     # Backward compatible fields
     noise_score: float = 0.0
@@ -45,6 +53,18 @@ class FrameMetrics:
 
 
 @dataclass
+class BlinkAnalysis:
+    """Result of blink detection analysis across frames."""
+    
+    blink_count: int
+    ear_values: list[float]  # Eye aspect ratios per frame
+    blink_frames: list[int]  # Frame indices where blinks detected
+    avg_ear: float
+    min_ear: float
+    has_natural_blinks: bool  # True if natural blink pattern detected
+
+
+@dataclass
 class PADResult:
     """Result of PAD analysis."""
 
@@ -54,6 +74,10 @@ class PADResult:
     evidence: dict
     flagged_frames: list[int]
     
+    # Liveness analysis results
+    blink_analysis: Optional[BlinkAnalysis] = None
+    texture_analysis: Optional[dict] = None
+    
     # Backward compatible fields
     pad_score: float = 0.0
     replay_suspected: bool = False
@@ -61,6 +85,8 @@ class PADResult:
     low_motion: bool = False
     frame_stutter: bool = False
     face_boundary_mismatch: bool = False
+    no_blinks_detected: bool = False
+    printed_texture_detected: bool = False
     suspicious_frames: list[int] = None
     artifacts_detected: list[str] = None
 
@@ -73,6 +99,8 @@ class PADResult:
         self.injection_suspected = "PAD_INJECTION_ARTIFACTS" in self.reason_codes
         self.low_motion = "PAD_LOW_MOTION_ENTROPY" in self.reason_codes
         self.frame_stutter = "PAD_FRAME_STUTTER" in self.reason_codes
+        self.no_blinks_detected = "PAD_NO_BLINK_DETECTED" in self.reason_codes
+        self.printed_texture_detected = "PAD_PRINTED_TEXTURE" in self.reason_codes
 
 
 class PADAnalyzer:
@@ -83,6 +111,8 @@ class PADAnalyzer:
     - Injection attacks via unnatural sharpness boundaries
     - Static image attacks via motion entropy analysis
     - Video replay via frame stutter detection
+    - Liveness via blink detection using Eye Aspect Ratio (EAR)
+    - Printed photo detection via LBP texture analysis
     """
 
     def __init__(
@@ -94,6 +124,11 @@ class PADAnalyzer:
         moire_threshold: float = 0.15,
         color_temp_variance_max: float = 0.2,
         face_boundary_threshold: float = 0.4,
+        # Liveness detection thresholds
+        ear_blink_threshold: float = 0.21,
+        min_blinks_expected: int = 1,
+        min_video_frames_for_blink: int = 30,
+        lbp_texture_threshold: float = 0.4,
     ) -> None:
         """
         Initialize PAD analyzer with configurable thresholds.
@@ -106,6 +141,10 @@ class PADAnalyzer:
             moire_threshold: Threshold for moiré pattern detection
             color_temp_variance_max: Max acceptable color temp variance
             face_boundary_threshold: Threshold for face boundary mismatch detection
+            ear_blink_threshold: Eye Aspect Ratio below which a blink is detected
+            min_blinks_expected: Minimum blinks expected in a video (for liveness)
+            min_video_frames_for_blink: Minimum frames required to check for blinks
+            lbp_texture_threshold: Score below which texture is suspected printed
         """
         self.sharpness_threshold = sharpness_threshold
         self.noise_floor = noise_floor
@@ -114,13 +153,28 @@ class PADAnalyzer:
         self.moire_threshold = moire_threshold
         self.color_temp_variance_max = color_temp_variance_max
         self.face_boundary_threshold = face_boundary_threshold
+        self.ear_blink_threshold = ear_blink_threshold
+        self.min_blinks_expected = min_blinks_expected
+        self.min_video_frames_for_blink = min_video_frames_for_blink
+        self.lbp_texture_threshold = lbp_texture_threshold
+        
+        # Lazy-load face detector for landmark extraction
+        self._face_detector = None
+        self._landmark_predictor = None
 
-    def analyze_frames(self, frames: list[np.ndarray]) -> PADResult:
+    def analyze_frames(
+        self,
+        frames: list[np.ndarray],
+        facial_landmarks: Optional[list[np.ndarray]] = None,
+    ) -> PADResult:
         """
         Analyze video frames for presentation attack indicators.
         
         Args:
             frames: List of BGR frame arrays
+            facial_landmarks: Optional list of 68-point facial landmarks per frame
+                             (for blink detection). If not provided, will attempt
+                             to detect landmarks using dlib if available.
         
         Returns:
             PADResult with per-frame metrics and overall assessment
@@ -139,7 +193,12 @@ class PADAnalyzer:
         motion_scores: list[float] = []
 
         for idx, frame in enumerate(frames):
-            metrics = self._analyze_single_frame(frame, prev_frame, idx)
+            # Get landmarks for this frame if provided
+            frame_landmarks = None
+            if facial_landmarks and idx < len(facial_landmarks):
+                frame_landmarks = facial_landmarks[idx]
+            
+            metrics = self._analyze_single_frame(frame, prev_frame, idx, frame_landmarks)
             frame_metrics.append(metrics)
 
             if metrics.motion_entropy > 0:
@@ -151,6 +210,8 @@ class PADAnalyzer:
         reason_codes: list[str] = []
         evidence: dict = {}
         flagged_frames: list[int] = []
+        blink_analysis: Optional[BlinkAnalysis] = None
+        texture_analysis: Optional[dict] = None
 
         # Check for replay indicators (screen artifacts)
         moire_frames = [
@@ -197,6 +258,26 @@ class PADAnalyzer:
             reason_codes.append("PAD_FACE_BOUNDARY_MISMATCH")
             evidence.update(face_boundary_evidence)
 
+        # === NEW: Blink Detection Analysis ===
+        # Only check for blinks if we have enough frames (video, not single image)
+        if len(frames) >= self.min_video_frames_for_blink:
+            blink_analysis = self._analyze_blinks(frame_metrics)
+            evidence["blink_count"] = blink_analysis.blink_count
+            evidence["avg_ear"] = blink_analysis.avg_ear
+            evidence["has_natural_blinks"] = blink_analysis.has_natural_blinks
+            
+            if not blink_analysis.has_natural_blinks:
+                reason_codes.append("PAD_NO_BLINK_DETECTED")
+                evidence["expected_blinks"] = self.min_blinks_expected
+
+        # === NEW: LBP Texture Analysis ===
+        texture_analysis = self._analyze_texture(frame_metrics, frames)
+        evidence["avg_texture_score"] = texture_analysis.get("avg_score", 0)
+        evidence["texture_verdict"] = texture_analysis.get("verdict", "unknown")
+        
+        if texture_analysis.get("is_printed", False):
+            reason_codes.append("PAD_PRINTED_TEXTURE")
+
         # Compute overall PAD score
         overall_score = self._compute_pad_score(frame_metrics, reason_codes)
 
@@ -206,6 +287,8 @@ class PADAnalyzer:
             reason_codes=reason_codes,
             evidence=evidence,
             flagged_frames=list(set(flagged_frames)),
+            blink_analysis=blink_analysis,
+            texture_analysis=texture_analysis,
         )
 
     def _analyze_single_frame(
@@ -213,6 +296,7 @@ class PADAnalyzer:
         frame: np.ndarray,
         prev_frame: Optional[np.ndarray],
         idx: int,
+        landmarks: Optional[np.ndarray] = None,
     ) -> FrameMetrics:
         """Compute metrics for a single frame."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -235,6 +319,16 @@ class PADAnalyzer:
         # Moiré pattern detection
         moire_score = self._detect_moire(gray)
 
+        # Eye Aspect Ratio for blink detection
+        ear: Optional[float] = None
+        blink_detected = False
+        if landmarks is not None and len(landmarks) >= 68:
+            ear = self._compute_eye_aspect_ratio(landmarks)
+            blink_detected = ear < self.ear_blink_threshold if ear else False
+        
+        # LBP texture score for skin vs printed photo
+        lbp_texture_score = self._compute_lbp_texture_score(frame)
+
         # Per-frame flags
         pad_flags: list[str] = []
         if sharpness < self.sharpness_threshold * 0.5:
@@ -243,6 +337,10 @@ class PADAnalyzer:
             pad_flags.append("high_noise")
         if moire_score > self.moire_threshold:
             pad_flags.append("moire_detected")
+        if blink_detected:
+            pad_flags.append("blink_detected")
+        if lbp_texture_score < self.lbp_texture_threshold:
+            pad_flags.append("printed_texture")
 
         return FrameMetrics(
             frame_idx=idx,
@@ -252,6 +350,9 @@ class PADAnalyzer:
             color_temperature=color_temperature,
             moire_score=moire_score,
             pad_flags=pad_flags,
+            eye_aspect_ratio=ear,
+            blink_detected=blink_detected,
+            lbp_texture_score=lbp_texture_score,
         )
 
     def _estimate_noise(self, gray: np.ndarray) -> float:
@@ -420,6 +521,261 @@ class PADAnalyzer:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         score = self._detect_moire(gray)
         return score > self.moire_threshold
+
+    # === LIVENESS DETECTION METHODS ===
+
+    def _compute_eye_aspect_ratio(self, landmarks: np.ndarray) -> float:
+        """Compute Eye Aspect Ratio (EAR) for blink detection.
+        
+        EAR is computed from 68-point facial landmarks.
+        When eyes are open, EAR is relatively constant (~0.3).
+        When eyes close (blink), EAR drops rapidly (<0.21).
+        
+        Args:
+            landmarks: 68x2 array of facial landmark coordinates
+            
+        Returns:
+            Average EAR of both eyes (0-0.5 typical range)
+        """
+        def eye_aspect_ratio(eye_points: np.ndarray) -> float:
+            """Compute EAR for a single eye (6 points)."""
+            # Vertical distances
+            v1 = np.linalg.norm(eye_points[1] - eye_points[5])
+            v2 = np.linalg.norm(eye_points[2] - eye_points[4])
+            # Horizontal distance
+            h = np.linalg.norm(eye_points[0] - eye_points[3])
+            
+            if h == 0:
+                return 0.0
+            
+            ear = (v1 + v2) / (2.0 * h)
+            return ear
+        
+        # 68-point landmark indices for eyes:
+        # Left eye: 36-41 (indices 36, 37, 38, 39, 40, 41)
+        # Right eye: 42-47 (indices 42, 43, 44, 45, 46, 47)
+        left_eye = landmarks[36:42]
+        right_eye = landmarks[42:48]
+        
+        left_ear = eye_aspect_ratio(left_eye)
+        right_ear = eye_aspect_ratio(right_eye)
+        
+        # Average of both eyes
+        return (left_ear + right_ear) / 2.0
+
+    def _analyze_blinks(self, frame_metrics: list[FrameMetrics]) -> BlinkAnalysis:
+        """Analyze blink patterns across frames.
+        
+        Detects natural blink patterns which indicate liveness.
+        Printed photos and static images won't have blinks.
+        
+        Args:
+            frame_metrics: Per-frame metrics including EAR values
+            
+        Returns:
+            BlinkAnalysis with blink count and pattern assessment
+        """
+        ear_values = [
+            m.eye_aspect_ratio for m in frame_metrics 
+            if m.eye_aspect_ratio is not None
+        ]
+        
+        if not ear_values:
+            # No EAR data available (no landmarks detected)
+            return BlinkAnalysis(
+                blink_count=0,
+                ear_values=[],
+                blink_frames=[],
+                avg_ear=0.0,
+                min_ear=0.0,
+                has_natural_blinks=False,
+            )
+        
+        blink_frames = [
+            m.frame_idx for m in frame_metrics 
+            if m.blink_detected
+        ]
+        
+        # Detect blink sequences (consecutive low-EAR frames)
+        # A natural blink is typically 3-5 consecutive low-EAR frames
+        blink_count = 0
+        in_blink = False
+        blink_length = 0
+        
+        for m in frame_metrics:
+            if m.eye_aspect_ratio is None:
+                continue
+                
+            if m.eye_aspect_ratio < self.ear_blink_threshold:
+                if not in_blink:
+                    in_blink = True
+                    blink_length = 1
+                else:
+                    blink_length += 1
+            else:
+                if in_blink:
+                    # End of blink - check if it was a natural blink (2-8 frames)
+                    if 2 <= blink_length <= 8:
+                        blink_count += 1
+                    in_blink = False
+                    blink_length = 0
+        
+        # Check if still in blink at end
+        if in_blink and 2 <= blink_length <= 8:
+            blink_count += 1
+        
+        avg_ear = mean(ear_values) if ear_values else 0.0
+        min_ear = min(ear_values) if ear_values else 0.0
+        
+        # Natural blinks expected: at least min_blinks_expected in the video
+        # Also check that EAR variance exists (not constant)
+        has_variance = len(ear_values) >= 5 and stdev(ear_values) > 0.02 if len(ear_values) >= 5 else False
+        has_natural_blinks = blink_count >= self.min_blinks_expected and has_variance
+        
+        return BlinkAnalysis(
+            blink_count=blink_count,
+            ear_values=ear_values,
+            blink_frames=blink_frames,
+            avg_ear=avg_ear,
+            min_ear=min_ear,
+            has_natural_blinks=has_natural_blinks,
+        )
+
+    def _compute_lbp_texture_score(self, frame: np.ndarray) -> float:
+        """Compute LBP texture score to distinguish real skin from printed photos.
+        
+        Local Binary Patterns (LBP) capture micro-texture patterns.
+        Real skin has characteristic texture from pores, fine lines.
+        Printed photos have different texture from paper/ink patterns.
+        
+        Args:
+            frame: BGR image
+            
+        Returns:
+            Score from 0-1 where higher = more like real skin texture
+        """
+        # Convert to grayscale
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Detect face region for texture analysis
+        skin_mask = self._segment_skin_region(frame)
+        
+        if skin_mask is None:
+            # No skin region detected, analyze whole image
+            roi = gray
+        else:
+            # Apply mask to focus on skin regions
+            roi = cv2.bitwise_and(gray, gray, mask=skin_mask)
+            # Crop to bounding box of skin region
+            coords = np.column_stack(np.where(skin_mask > 0))
+            if len(coords) > 100:
+                y1, x1 = coords.min(axis=0)
+                y2, x2 = coords.max(axis=0)
+                roi = gray[y1:y2, x1:x2]
+            else:
+                roi = gray
+        
+        if roi.size < 100:
+            return 0.5  # Not enough data
+        
+        # Compute LBP
+        # radius=1, n_points=8 is classic LBP
+        # radius=2, n_points=16 captures more spatial structure
+        radius = 2
+        n_points = 8 * radius
+        
+        try:
+            lbp = local_binary_pattern(roi, n_points, radius, method='uniform')
+        except Exception:
+            return 0.5  # LBP computation failed
+        
+        # Compute histogram of LBP values
+        n_bins = n_points + 2  # Uniform LBP has n_points + 2 patterns
+        hist, _ = np.histogram(lbp.ravel(), bins=n_bins, range=(0, n_bins))
+        hist = hist.astype(float)
+        hist /= (hist.sum() + 1e-7)
+        
+        # Real skin texture characteristics:
+        # - Higher entropy (more varied patterns)
+        # - Specific distribution of uniform patterns
+        # Printed photos tend to have:
+        # - Lower entropy (more uniform patterns from printing)
+        # - Different pattern distribution (paper/ink artifacts)
+        
+        # Compute histogram entropy
+        hist_nonzero = hist[hist > 0]
+        entropy = -np.sum(hist_nonzero * np.log2(hist_nonzero))
+        max_entropy = np.log2(n_bins)
+        normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
+        
+        # Check for printing artifacts (periodic patterns)
+        # Printed photos often have regular patterns from halftone/dithering
+        fft = np.fft.fft(hist)
+        fft_mag = np.abs(fft[1:len(fft)//2])  # Exclude DC component
+        if len(fft_mag) > 2:
+            peak_ratio = np.max(fft_mag) / (np.mean(fft_mag) + 1e-7)
+            # High peak ratio suggests periodic patterns (printed)
+            periodicity_score = 1.0 - min(peak_ratio / 10, 1.0)
+        else:
+            periodicity_score = 0.5
+        
+        # Combine scores
+        # Higher entropy and lower periodicity = more like real skin
+        score = normalized_entropy * 0.6 + periodicity_score * 0.4
+        
+        return float(max(0, min(1, score)))
+
+    def _analyze_texture(
+        self,
+        frame_metrics: list[FrameMetrics],
+        frames: list[np.ndarray],
+    ) -> dict:
+        """Aggregate texture analysis across frames.
+        
+        Args:
+            frame_metrics: Per-frame metrics with LBP scores
+            frames: Original frames
+            
+        Returns:
+            Dictionary with texture analysis results
+        """
+        lbp_scores = [m.lbp_texture_score for m in frame_metrics]
+        
+        if not lbp_scores:
+            return {
+                "avg_score": 0.0,
+                "min_score": 0.0,
+                "verdict": "no_data",
+                "is_printed": False,
+            }
+        
+        avg_score = mean(lbp_scores)
+        min_score = min(lbp_scores)
+        
+        # If multiple frames consistently show printed texture, flag it
+        low_score_ratio = sum(1 for s in lbp_scores if s < self.lbp_texture_threshold) / len(lbp_scores)
+        
+        is_printed = (
+            avg_score < self.lbp_texture_threshold or
+            low_score_ratio > 0.5
+        )
+        
+        if avg_score >= 0.7:
+            verdict = "real_skin"
+        elif avg_score >= self.lbp_texture_threshold:
+            verdict = "likely_real"
+        elif avg_score >= 0.3:
+            verdict = "suspicious"
+        else:
+            verdict = "likely_printed"
+        
+        return {
+            "avg_score": avg_score,
+            "min_score": min_score,
+            "low_score_ratio": low_score_ratio,
+            "verdict": verdict,
+            "is_printed": is_printed,
+        }
 
     def _detect_face_boundary_mismatch(
         self,

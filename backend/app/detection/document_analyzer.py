@@ -7,12 +7,16 @@ Responsibilities:
 - Flag OCR confidence issues
 - Identify font inconsistencies
 - Check for text alignment problems
+- Validate MRZ (Machine Readable Zone) checksums
+- Analyze EXIF metadata for tampering signs
 """
 
 import numpy as np
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 from statistics import mean, stdev
+from io import BytesIO
 
 import cv2
 
@@ -37,6 +41,35 @@ class OCRResult:
 
 
 @dataclass
+class MRZValidation:
+    """Result of MRZ (Machine Readable Zone) validation."""
+    
+    detected: bool
+    mrz_type: Optional[str]  # TD1, TD2, TD3, or None
+    mrz_lines: list[str]
+    parsed_data: dict  # Extracted fields (name, dob, doc_number, etc.)
+    checksums_valid: bool
+    checksum_details: dict  # Per-field checksum results
+    confidence: float
+
+
+@dataclass
+class EXIFAnalysis:
+    """Result of EXIF metadata analysis."""
+    
+    has_exif: bool
+    software_edited: bool  # True if editing software detected
+    software_name: Optional[str]
+    creation_date: Optional[str]
+    modification_date: Optional[str]
+    camera_make: Optional[str]
+    camera_model: Optional[str]
+    gps_present: bool
+    suspicious_flags: list[str]
+    is_suspicious: bool
+
+
+@dataclass
 class DocumentAnalysisResult:
     """Result of document analysis."""
 
@@ -47,6 +80,10 @@ class DocumentAnalysisResult:
     reason_codes: list[str]
     evidence: dict
     doc_score: float  # 0-1, higher = more suspicious
+    
+    # MRZ and EXIF analysis
+    mrz_validation: Optional[MRZValidation] = None
+    exif_analysis: Optional[EXIFAnalysis] = None
     
     # Backward compatible fields
     detected: bool = True
@@ -259,6 +296,28 @@ class DocumentAnalyzer:
             reason_codes.append("DOC_TEMPLATE_MISMATCH")
             evidence["template_mismatch"] = True
 
+        # === MRZ Validation ===
+        full_text = " ".join(tb.text for tb in text_boxes)
+        mrz_validation = self._validate_mrz(text_boxes, full_text)
+        if mrz_validation and mrz_validation.detected:
+            evidence["mrz_detected"] = True
+            evidence["mrz_type"] = mrz_validation.mrz_type
+            evidence["mrz_checksums_valid"] = mrz_validation.checksums_valid
+            
+            if not mrz_validation.checksums_valid:
+                reason_codes.append("DOC_MRZ_INVALID")
+                evidence["mrz_checksum_details"] = mrz_validation.checksum_details
+
+        # === EXIF Metadata Analysis ===
+        exif_analysis = self._analyze_exif(image)
+        if exif_analysis:
+            evidence["has_exif"] = exif_analysis.has_exif
+            evidence["software_edited"] = exif_analysis.software_edited
+            
+            if exif_analysis.is_suspicious:
+                reason_codes.append("DOC_METADATA_SUSPICIOUS")
+                evidence["exif_suspicious_flags"] = exif_analysis.suspicious_flags
+
         # Compute overall document suspicion score
         doc_score = self._compute_doc_score(
             avg_confidence=avg_confidence,
@@ -268,12 +327,14 @@ class DocumentAnalyzer:
 
         return DocumentAnalysisResult(
             text_boxes=text_boxes,
-            full_text=" ".join(tb.text for tb in text_boxes),
+            full_text=full_text,
             avg_confidence=avg_confidence,
             anomalies=anomalies,
             reason_codes=reason_codes,
             evidence=evidence,
             doc_score=doc_score,
+            mrz_validation=mrz_validation,
+            exif_analysis=exif_analysis,
             detected=True,
             ocr_results=ocr_results,
             overall_confidence=avg_confidence,
@@ -705,6 +766,474 @@ class DocumentAnalyzer:
                 best_score = max(best_score, 0.3)
         
         return min(best_score, 1.0)
+
+    # === MRZ VALIDATION METHODS ===
+
+    def _validate_mrz(
+        self,
+        text_boxes: list[TextBox],
+        full_text: str,
+    ) -> Optional[MRZValidation]:
+        """Validate Machine Readable Zone (MRZ) if present.
+        
+        Supports:
+        - TD1: ID cards (3 lines, 30 chars each)
+        - TD2: Some ID cards (2 lines, 36 chars each)
+        - TD3: Passports (2 lines, 44 chars each)
+        
+        Returns:
+            MRZValidation result or None if no MRZ detected
+        """
+        # MRZ character set: A-Z, 0-9, <
+        mrz_pattern = r'[A-Z0-9<]{20,44}'
+        
+        # Collect potential MRZ lines from OCR
+        mrz_candidates: list[str] = []
+        
+        for tb in text_boxes:
+            text = tb.text.upper().replace(' ', '').replace('O', '0')
+            # Clean common OCR errors
+            text = re.sub(r'[^A-Z0-9<]', '<', text)
+            
+            if len(text) >= 20 and re.match(mrz_pattern, text):
+                mrz_candidates.append(text)
+        
+        if not mrz_candidates:
+            return None
+        
+        # Try to identify MRZ type and validate
+        mrz_type = None
+        mrz_lines: list[str] = []
+        
+        # TD3 (Passport): 2 lines of 44 characters
+        td3_lines = [l for l in mrz_candidates if len(l) >= 42 and len(l) <= 46]
+        if len(td3_lines) >= 2:
+            mrz_type = "TD3"
+            mrz_lines = [l[:44].ljust(44, '<') for l in td3_lines[:2]]
+        
+        # TD1 (ID Card): 3 lines of 30 characters
+        elif len([l for l in mrz_candidates if 28 <= len(l) <= 32]) >= 3:
+            mrz_type = "TD1"
+            td1_candidates = [l for l in mrz_candidates if 28 <= len(l) <= 32]
+            mrz_lines = [l[:30].ljust(30, '<') for l in td1_candidates[:3]]
+        
+        # TD2: 2 lines of 36 characters
+        elif len([l for l in mrz_candidates if 34 <= len(l) <= 38]) >= 2:
+            mrz_type = "TD2"
+            td2_candidates = [l for l in mrz_candidates if 34 <= len(l) <= 38]
+            mrz_lines = [l[:36].ljust(36, '<') for l in td2_candidates[:2]]
+        
+        if not mrz_type:
+            return MRZValidation(
+                detected=False,
+                mrz_type=None,
+                mrz_lines=mrz_candidates,
+                parsed_data={},
+                checksums_valid=False,
+                checksum_details={},
+                confidence=0.0,
+            )
+        
+        # Validate checksums
+        checksums_valid, checksum_details = self._validate_mrz_checksums(
+            mrz_type, mrz_lines
+        )
+        
+        # Parse MRZ data
+        parsed_data = self._parse_mrz_data(mrz_type, mrz_lines)
+        
+        # Compute confidence based on checksum validation and line lengths
+        confidence = 0.7 if checksums_valid else 0.3
+        if all(len(l) == (44 if mrz_type == "TD3" else 36 if mrz_type == "TD2" else 30) 
+               for l in mrz_lines):
+            confidence += 0.2
+        
+        return MRZValidation(
+            detected=True,
+            mrz_type=mrz_type,
+            mrz_lines=mrz_lines,
+            parsed_data=parsed_data,
+            checksums_valid=checksums_valid,
+            checksum_details=checksum_details,
+            confidence=min(confidence, 1.0),
+        )
+
+    def _validate_mrz_checksums(
+        self,
+        mrz_type: str,
+        mrz_lines: list[str],
+    ) -> tuple[bool, dict]:
+        """Validate MRZ check digits per ICAO 9303.
+        
+        Returns:
+            Tuple of (all_valid, details_dict)
+        """
+        def compute_check_digit(data: str) -> int:
+            """Compute check digit for MRZ field."""
+            weights = [7, 3, 1]
+            values = {'<': 0}
+            # A-Z = 10-35
+            for i, c in enumerate('ABCDEFGHIJKLMNOPQRSTUVWXYZ'):
+                values[c] = 10 + i
+            # 0-9 = 0-9
+            for i in range(10):
+                values[str(i)] = i
+            
+            total = 0
+            for i, char in enumerate(data):
+                total += values.get(char, 0) * weights[i % 3]
+            
+            return total % 10
+        
+        details = {}
+        all_valid = True
+        
+        if mrz_type == "TD3" and len(mrz_lines) >= 2:
+            line2 = mrz_lines[1]
+            
+            # Document number (positions 0-8, check digit at 9)
+            doc_num = line2[0:9]
+            doc_check = line2[9] if len(line2) > 9 else ''
+            doc_computed = compute_check_digit(doc_num)
+            doc_valid = doc_check.isdigit() and int(doc_check) == doc_computed
+            details['document_number'] = {
+                'value': doc_num.replace('<', ''),
+                'check_digit': doc_check,
+                'computed': doc_computed,
+                'valid': doc_valid
+            }
+            if not doc_valid:
+                all_valid = False
+            
+            # Date of birth (positions 13-18, check digit at 19)
+            dob = line2[13:19]
+            dob_check = line2[19] if len(line2) > 19 else ''
+            dob_computed = compute_check_digit(dob)
+            dob_valid = dob_check.isdigit() and int(dob_check) == dob_computed
+            details['date_of_birth'] = {
+                'value': dob,
+                'check_digit': dob_check,
+                'computed': dob_computed,
+                'valid': dob_valid
+            }
+            if not dob_valid:
+                all_valid = False
+            
+            # Expiry date (positions 21-26, check digit at 27)
+            expiry = line2[21:27]
+            exp_check = line2[27] if len(line2) > 27 else ''
+            exp_computed = compute_check_digit(expiry)
+            exp_valid = exp_check.isdigit() and int(exp_check) == exp_computed
+            details['expiry_date'] = {
+                'value': expiry,
+                'check_digit': exp_check,
+                'computed': exp_computed,
+                'valid': exp_valid
+            }
+            if not exp_valid:
+                all_valid = False
+        
+        elif mrz_type == "TD1" and len(mrz_lines) >= 3:
+            # TD1 has different layout
+            line1 = mrz_lines[0]
+            line2 = mrz_lines[1]
+            
+            # Document number (line 1, positions 5-13, check at 14)
+            if len(line1) >= 15:
+                doc_num = line1[5:14]
+                doc_check = line1[14]
+                doc_computed = compute_check_digit(doc_num)
+                doc_valid = doc_check.isdigit() and int(doc_check) == doc_computed
+                details['document_number'] = {
+                    'value': doc_num.replace('<', ''),
+                    'check_digit': doc_check,
+                    'computed': doc_computed,
+                    'valid': doc_valid
+                }
+                if not doc_valid:
+                    all_valid = False
+            
+            # DOB (line 2, positions 0-5, check at 6)
+            if len(line2) >= 7:
+                dob = line2[0:6]
+                dob_check = line2[6]
+                dob_computed = compute_check_digit(dob)
+                dob_valid = dob_check.isdigit() and int(dob_check) == dob_computed
+                details['date_of_birth'] = {
+                    'value': dob,
+                    'check_digit': dob_check,
+                    'computed': dob_computed,
+                    'valid': dob_valid
+                }
+                if not dob_valid:
+                    all_valid = False
+        
+        return all_valid, details
+
+    def _parse_mrz_data(self, mrz_type: str, mrz_lines: list[str]) -> dict:
+        """Parse MRZ data into structured fields."""
+        data = {}
+        
+        if mrz_type == "TD3" and len(mrz_lines) >= 2:
+            line1 = mrz_lines[0]
+            line2 = mrz_lines[1]
+            
+            # Document type (P = passport)
+            data['document_type'] = line1[0:2].replace('<', '')
+            
+            # Issuing country (3-letter code)
+            data['issuing_country'] = line1[2:5].replace('<', '')
+            
+            # Names (surname<<given_names)
+            names = line1[5:].split('<<')
+            data['surname'] = names[0].replace('<', ' ').strip() if names else ''
+            data['given_names'] = names[1].replace('<', ' ').strip() if len(names) > 1 else ''
+            
+            # Line 2
+            data['document_number'] = line2[0:9].replace('<', '')
+            data['nationality'] = line2[10:13].replace('<', '')
+            data['date_of_birth'] = line2[13:19]
+            data['sex'] = line2[20] if len(line2) > 20 else ''
+            data['expiry_date'] = line2[21:27]
+        
+        elif mrz_type == "TD1" and len(mrz_lines) >= 3:
+            line1 = mrz_lines[0]
+            line2 = mrz_lines[1]
+            line3 = mrz_lines[2]
+            
+            data['document_type'] = line1[0:2].replace('<', '')
+            data['issuing_country'] = line1[2:5].replace('<', '')
+            data['document_number'] = line1[5:14].replace('<', '')
+            
+            data['date_of_birth'] = line2[0:6]
+            data['sex'] = line2[7] if len(line2) > 7 else ''
+            data['expiry_date'] = line2[8:14]
+            data['nationality'] = line2[15:18].replace('<', '')
+            
+            # Name in line 3
+            names = line3.split('<<')
+            data['surname'] = names[0].replace('<', ' ').strip() if names else ''
+            data['given_names'] = names[1].replace('<', ' ').strip() if len(names) > 1 else ''
+        
+        return data
+
+    # === EXIF METADATA ANALYSIS ===
+
+    def _analyze_exif(self, image: np.ndarray) -> Optional[EXIFAnalysis]:
+        """Analyze EXIF metadata for suspicious editing indicators.
+        
+        Note: This requires the original image bytes, not the decoded array.
+        When only a numpy array is available, we can only do limited analysis.
+        
+        For full EXIF analysis, the image should be passed as bytes.
+        """
+        suspicious_flags: list[str] = []
+        
+        # Known editing software signatures
+        editing_software = [
+            'photoshop', 'gimp', 'paint', 'lightroom', 'affinity',
+            'pixlr', 'canva', 'snapseed', 'vsco', 'facetune',
+            'adobe', 'corel', 'acdsee', 'capture one'
+        ]
+        
+        # Try to extract EXIF from numpy array
+        # This is limited - for full analysis, pass original image bytes
+        try:
+            from PIL import Image
+            from PIL.ExifTags import TAGS
+            
+            # Convert numpy array to PIL Image
+            pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            
+            # Try to get EXIF data
+            exif_data = pil_image._getexif()
+            
+            if exif_data is None:
+                # No EXIF data - could be stripped (suspicious for camera photos)
+                suspicious_flags.append("no_exif_data")
+                return EXIFAnalysis(
+                    has_exif=False,
+                    software_edited=False,
+                    software_name=None,
+                    creation_date=None,
+                    modification_date=None,
+                    camera_make=None,
+                    camera_model=None,
+                    gps_present=False,
+                    suspicious_flags=suspicious_flags,
+                    is_suspicious=len(suspicious_flags) > 0,
+                )
+            
+            # Parse EXIF tags
+            exif_dict = {}
+            for tag_id, value in exif_data.items():
+                tag = TAGS.get(tag_id, tag_id)
+                exif_dict[tag] = value
+            
+            # Check for editing software
+            software = exif_dict.get('Software', '')
+            software_edited = False
+            software_name = None
+            
+            if software:
+                software_lower = software.lower()
+                for editor in editing_software:
+                    if editor in software_lower:
+                        software_edited = True
+                        software_name = software
+                        suspicious_flags.append(f"editing_software:{software}")
+                        break
+            
+            # Check for camera info
+            camera_make = exif_dict.get('Make', None)
+            camera_model = exif_dict.get('Model', None)
+            
+            # Check dates
+            creation_date = exif_dict.get('DateTimeOriginal', None)
+            modification_date = exif_dict.get('DateTime', None)
+            
+            # Date mismatch is suspicious
+            if creation_date and modification_date:
+                if creation_date != modification_date:
+                    suspicious_flags.append("date_mismatch")
+            
+            # Check for GPS data
+            gps_present = 'GPSInfo' in exif_dict
+            
+            # Missing camera info for a "photo" is suspicious
+            if not camera_make and not camera_model:
+                suspicious_flags.append("no_camera_info")
+            
+            is_suspicious = len(suspicious_flags) > 0 and software_edited
+            
+            return EXIFAnalysis(
+                has_exif=True,
+                software_edited=software_edited,
+                software_name=software_name,
+                creation_date=str(creation_date) if creation_date else None,
+                modification_date=str(modification_date) if modification_date else None,
+                camera_make=str(camera_make) if camera_make else None,
+                camera_model=str(camera_model) if camera_model else None,
+                gps_present=gps_present,
+                suspicious_flags=suspicious_flags,
+                is_suspicious=is_suspicious,
+            )
+            
+        except Exception:
+            # EXIF extraction failed - likely no EXIF or unsupported format
+            return EXIFAnalysis(
+                has_exif=False,
+                software_edited=False,
+                software_name=None,
+                creation_date=None,
+                modification_date=None,
+                camera_make=None,
+                camera_model=None,
+                gps_present=False,
+                suspicious_flags=["exif_extraction_failed"],
+                is_suspicious=False,
+            )
+
+    def analyze_with_bytes(
+        self,
+        image_bytes: bytes,
+        image: Optional[np.ndarray] = None,
+    ) -> DocumentAnalysisResult:
+        """Analyze document with full EXIF support from original bytes.
+        
+        Args:
+            image_bytes: Original image file bytes
+            image: Optional decoded numpy array (will decode if not provided)
+            
+        Returns:
+            DocumentAnalysisResult with enhanced EXIF analysis
+        """
+        # Decode image if not provided
+        if image is None:
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        # Run standard analysis
+        result = self.analyze(image)
+        
+        # Enhanced EXIF analysis from bytes
+        try:
+            from PIL import Image
+            from PIL.ExifTags import TAGS
+            
+            pil_image = Image.open(BytesIO(image_bytes))
+            exif_data = pil_image._getexif()
+            
+            if exif_data:
+                # Re-run EXIF analysis with better data from bytes
+                result.exif_analysis = self._analyze_exif_from_pil(pil_image, exif_data)
+                
+                if result.exif_analysis.is_suspicious:
+                    if "DOC_METADATA_SUSPICIOUS" not in result.reason_codes:
+                        result.reason_codes.append("DOC_METADATA_SUSPICIOUS")
+                    result.evidence["exif_suspicious_flags"] = result.exif_analysis.suspicious_flags
+        except Exception:
+            pass
+        
+        return result
+
+    def _analyze_exif_from_pil(self, pil_image, exif_data) -> EXIFAnalysis:
+        """Analyze EXIF data from PIL Image object."""
+        from PIL.ExifTags import TAGS
+        
+        suspicious_flags: list[str] = []
+        editing_software = [
+            'photoshop', 'gimp', 'paint', 'lightroom', 'affinity',
+            'pixlr', 'canva', 'snapseed', 'vsco', 'facetune',
+            'adobe', 'corel', 'acdsee', 'capture one'
+        ]
+        
+        exif_dict = {}
+        for tag_id, value in exif_data.items():
+            tag = TAGS.get(tag_id, tag_id)
+            exif_dict[tag] = value
+        
+        software = exif_dict.get('Software', '')
+        software_edited = False
+        software_name = None
+        
+        if software:
+            software_lower = software.lower()
+            for editor in editing_software:
+                if editor in software_lower:
+                    software_edited = True
+                    software_name = software
+                    suspicious_flags.append(f"editing_software:{software}")
+                    break
+        
+        camera_make = exif_dict.get('Make', None)
+        camera_model = exif_dict.get('Model', None)
+        creation_date = exif_dict.get('DateTimeOriginal', None)
+        modification_date = exif_dict.get('DateTime', None)
+        
+        if creation_date and modification_date:
+            if creation_date != modification_date:
+                suspicious_flags.append("date_mismatch")
+        
+        gps_present = 'GPSInfo' in exif_dict
+        
+        if not camera_make and not camera_model:
+            suspicious_flags.append("no_camera_info")
+        
+        is_suspicious = len(suspicious_flags) > 0 and software_edited
+        
+        return EXIFAnalysis(
+            has_exif=True,
+            software_edited=software_edited,
+            software_name=software_name,
+            creation_date=str(creation_date) if creation_date else None,
+            modification_date=str(modification_date) if modification_date else None,
+            camera_make=str(camera_make) if camera_make else None,
+            camera_model=str(camera_model) if camera_model else None,
+            gps_present=gps_present,
+            suspicious_flags=suspicious_flags,
+            is_suspicious=is_suspicious,
+        )
 
 
 # Singleton

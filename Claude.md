@@ -220,21 +220,31 @@ Detection modules emit explainable reason codes:
 
 | Category | Code | Severity | Trigger |
 |----------|------|----------|---------|
-| Face | `FACE_MISMATCH` | high | Similarity < 0.45 |
+| Face | `FACE_MISMATCH` | high | Similarity < threshold (adaptive 0.35-0.50) |
 | Face | `FACE_NOT_DETECTED_SELFIE` | high | No face in selfie |
 | Face | `FACE_NOT_DETECTED_ID` | high | No face in ID |
 | Face | `MULTIPLE_FACES_SELFIE` | warn | Multiple faces detected |
+| Face | `FACE_LOW_QUALITY_SELFIE` | warn | Selfie quality score < 0.4 or has critical issues |
+| Face | `FACE_LOW_QUALITY_ID` | warn | ID photo quality score < 0.4 or has critical issues |
+| Face | `FACE_EXTREME_POSE` | warn | Pose deviation > 30 degrees from frontal |
 | PAD | `PAD_SUSPECT_REPLAY` | high | Color temp variance high |
 | PAD | `PAD_SCREEN_ARTIFACTS` | warn | Moiré patterns detected |
 | PAD | `PAD_LOW_MOTION_ENTROPY` | warn | Insufficient movement |
 | PAD | `PAD_FRAME_STUTTER` | warn | Duplicate frames |
 | PAD | `PAD_INJECTION_ARTIFACTS` | high | Unnatural sharpness boundaries |
 | PAD | `PAD_FACE_BOUNDARY_MISMATCH` | high | Face boundary inconsistent with background |
+| PAD | `PAD_NO_BLINK_DETECTED` | warn | No natural blinks in video (>30 frames) |
+| PAD | `PAD_PRINTED_TEXTURE` | high | LBP texture analysis indicates printed photo |
+| PAD | `PAD_FLAT_DEPTH` | high | Depth analysis indicates flat surface |
 | Doc | `DOC_TEMPLATE_MISMATCH` | warn | Document structure doesn't match ID card pattern |
 | Doc | `DOC_OCR_LOW_CONFIDENCE` | warn | OCR confidence < 0.5 |
 | Doc | `DOC_FONT_INCONSISTENT` | warn | Font height variance > 0.5 |
 | Doc | `DOC_TEXT_MISALIGNED` | warn | Alignment anomalies |
 | Doc | `DOC_EDGE_ARTIFACTS` | warn | Rectangular edge patterns |
+| Doc | `DOC_MRZ_INVALID` | high | MRZ check digits fail validation |
+| Doc | `DOC_MRZ_MISMATCH` | warn | MRZ data doesn't match OCR text |
+| Doc | `DOC_METADATA_SUSPICIOUS` | warn | EXIF shows editing software or date mismatch |
+| Doc | `DOC_BARCODE_MISMATCH` | warn | Barcode data doesn't match document text |
 
 ### Scoring Logic
 
@@ -333,6 +343,18 @@ alembic downgrade -1
 15. ~~**Micro-interactions & Visual Feedback**~~: Added Framer Motion for animations. Cards now have `glass-interactive` class with hover scale/shadow/glow effects. Created `SuccessAnimation` component with checkmark + ripple effect shown after upload completion. Added `ProgressRing` animated component for upload progress. Button press animations, input focus glow, and smooth transitions throughout.
 
 16. ~~**Search Functionality**~~: Sessions page now has a search input with 300ms debounce that filters by session ID, attack family, source, or status. Command palette (⌘K) enhanced to search sessions in real-time as you type, showing up to 5 results with ability to view all matches. Backend `GET /sessions` endpoint supports `search` query parameter.
+
+### High Priority - Phase 1: Detection Enhancements (COMPLETED)
+
+17. ~~**Liveness Detection Enhancements**~~: Added blink detection using Eye Aspect Ratio (EAR) from 68-point facial landmarks. Implemented LBP (Local Binary Pattern) texture analysis to detect printed photos vs real skin. Added `BlinkAnalysis` dataclass for aggregating blink patterns across frames. New reason codes: `PAD_NO_BLINK_DETECTED`, `PAD_PRINTED_TEXTURE`, `PAD_FLAT_DEPTH`. PAD analyzer now computes per-frame EAR and texture scores.
+
+18. ~~**Document Verification Improvements**~~: Added MRZ (Machine Readable Zone) validation with ICAO 9303 checksum verification for TD1/TD2/TD3 formats. Implemented EXIF metadata analysis to detect editing software (Photoshop, GIMP, etc.) and suspicious metadata patterns. New dataclasses: `MRZValidation`, `EXIFAnalysis`. New reason codes: `DOC_MRZ_INVALID`, `DOC_MRZ_MISMATCH`, `DOC_BARCODE_MISMATCH`. Added `analyze_with_bytes()` method for enhanced EXIF analysis from original image bytes.
+
+19. ~~**Face Analysis Accuracy**~~: Implemented adaptive similarity thresholds based on image quality scores. Added `FaceQuality` dataclass with comprehensive metrics: sharpness, lighting, pose deviation, face size ratio. Quality scoring uses Laplacian variance for sharpness, histogram analysis for lighting, and landmark geometry for pose estimation. Thresholds range from 0.35 (poor quality) to 0.50 (high quality). New reason codes: `FACE_LOW_QUALITY_SELFIE`, `FACE_LOW_QUALITY_ID`, `FACE_EXTREME_POSE`.
+
+20. ~~**Scoring Service Updates**~~: Enhanced `compute_risk_score()` to incorporate liveness signals and quality adjustments. Added `compute_liveness_score()` for combining blink detection, texture analysis, and motion entropy. Critical liveness failures (`PAD_PRINTED_TEXTURE`, `PAD_FLAT_DEPTH`) now boost risk score. Document integrity failures (`DOC_MRZ_INVALID`) also increase risk.
+
+---
 
 ### Medium Priority
 
