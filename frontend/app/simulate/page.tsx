@@ -6,17 +6,19 @@ import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   Camera,
+  CheckCircle2,
   FileText,
   Loader2,
   Monitor,
   Zap,
   Shield,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, Session, SessionListResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
 import {
   Select,
   SelectContent,
@@ -50,12 +52,39 @@ const attackBg: Record<string, string> = {
   benign: "bg-green-500/10",
 };
 
+// Generate a temporary ID for optimistic updates
+function generateTempId() {
+  return `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Create optimistic session placeholder
+function createOptimisticSession(
+  attackFamily: string,
+  attackSeverity: string
+): Session {
+  const now = new Date().toISOString();
+  return {
+    id: generateTempId(),
+    created_at: now,
+    updated_at: now,
+    status: "processing",
+    source: "synthetic",
+    attack_family: attackFamily,
+    attack_severity: attackSeverity,
+  };
+}
+
 export default function SimulatePage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [selectedFamily, setSelectedFamily] = useState<string>("");
   const [severity, setSeverity] = useState("medium");
   const [count, setCount] = useState("1");
+  const [generationProgress, setGenerationProgress] = useState<{
+    current: number;
+    total: number;
+    status: "idle" | "generating" | "processing" | "complete";
+  }>({ current: 0, total: 0, status: "idle" });
 
   const { data: families, isLoading: loadingFamilies } = useQuery({
     queryKey: ["attack-families"],
@@ -63,25 +92,125 @@ export default function SimulatePage() {
   });
 
   const generateMutation = useMutation({
-    mutationFn: () =>
-      api.generateSyntheticSessions({
+    mutationFn: async () => {
+      const requestCount = parseInt(count);
+      setGenerationProgress({
+        current: 0,
+        total: requestCount,
+        status: "generating",
+      });
+
+      // Call the API
+      const sessions = await api.generateSyntheticSessions({
         attack_family: selectedFamily,
         attack_severity: severity,
-        count: parseInt(count),
-      }),
-    onSuccess: (sessions) => {
+        count: requestCount,
+      });
+
+      // Update progress to processing
+      setGenerationProgress({
+        current: requestCount,
+        total: requestCount,
+        status: "processing",
+      });
+
+      return sessions;
+    },
+    onMutate: async () => {
+      // Cancel any outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ["sessions"] });
+
+      // Snapshot the previous value
+      const previousSessions = queryClient.getQueryData<SessionListResponse>([
+        "sessions",
+        1,
+        { status: "", source: "", attack_family: "" },
+      ]);
+
+      // Create optimistic sessions
+      const requestCount = parseInt(count);
+      const optimisticSessions: Session[] = Array.from({
+        length: requestCount,
+      }).map(() => createOptimisticSession(selectedFamily, severity));
+
+      // Optimistically update the cache
+      queryClient.setQueryData<SessionListResponse>(
+        ["sessions", 1, { status: "", source: "", attack_family: "" }],
+        (old) => {
+          if (!old) {
+            return {
+              items: optimisticSessions,
+              total: requestCount,
+              page: 1,
+              page_size: 20,
+              pages: 1,
+            };
+          }
+          return {
+            ...old,
+            items: [...optimisticSessions, ...old.items].slice(0, 20),
+            total: old.total + requestCount,
+          };
+        }
+      );
+
+      return { previousSessions, optimisticSessions };
+    },
+    onSuccess: (sessions, _, context) => {
+      // Update progress to complete
+      setGenerationProgress((prev) => ({
+        ...prev,
+        status: "complete",
+      }));
+
+      // Replace optimistic sessions with real ones
+      if (context?.optimisticSessions) {
+        queryClient.setQueryData<SessionListResponse>(
+          ["sessions", 1, { status: "", source: "", attack_family: "" }],
+          (old) => {
+            if (!old) return old;
+
+            // Remove optimistic sessions and add real ones
+            const filteredItems = old.items.filter(
+              (item) => !item.id.startsWith("temp-")
+            );
+            return {
+              ...old,
+              items: [...sessions, ...filteredItems].slice(0, 20),
+            };
+          }
+        );
+      }
+
+      // Invalidate to ensure fresh data
       queryClient.invalidateQueries({ queryKey: ["sessions"] });
+
       toast({
         title: "Sessions generated",
-        description: `Created ${sessions.length} synthetic session(s)`,
+        description: `Created ${sessions.length} synthetic session(s). Processing has started.`,
       });
-      if (sessions.length === 1) {
-        router.push(`/sessions/${sessions[0].id}`);
-      } else {
-        router.push("/sessions");
-      }
+
+      // Navigate after a brief delay to show the complete state
+      setTimeout(() => {
+        setGenerationProgress({ current: 0, total: 0, status: "idle" });
+        if (sessions.length === 1) {
+          router.push(`/sessions/${sessions[0].id}`);
+        } else {
+          router.push("/sessions");
+        }
+      }, 500);
     },
-    onError: (error) => {
+    onError: (error, _, context) => {
+      // Rollback to the previous value
+      if (context?.previousSessions) {
+        queryClient.setQueryData(
+          ["sessions", 1, { status: "", source: "", attack_family: "" }],
+          context.previousSessions
+        );
+      }
+
+      setGenerationProgress({ current: 0, total: 0, status: "idle" });
+
       toast({
         title: "Generation failed",
         description: error.message,
@@ -89,6 +218,16 @@ export default function SimulatePage() {
       });
     },
   });
+
+  const isGenerating = generationProgress.status !== "idle";
+  const progressPercent =
+    generationProgress.total > 0
+      ? generationProgress.status === "complete"
+        ? 100
+        : generationProgress.status === "processing"
+          ? 75
+          : (generationProgress.current / generationProgress.total) * 50
+      : 0;
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
@@ -123,9 +262,10 @@ export default function SimulatePage() {
                       "cursor-pointer transition-all glass border-2",
                       attackColors[family.id],
                       isSelected && attackBg[family.id],
-                      isSelected && "ring-2 ring-primary"
+                      isSelected && "ring-2 ring-primary",
+                      isGenerating && "pointer-events-none opacity-50"
                     )}
-                    onClick={() => setSelectedFamily(family.id)}
+                    onClick={() => !isGenerating && setSelectedFamily(family.id)}
                   >
                     <CardContent className="p-4">
                       <div className="flex items-start gap-3">
@@ -152,7 +292,7 @@ export default function SimulatePage() {
       </div>
 
       {/* Configuration */}
-      <Card className="glass">
+      <Card className={cn("glass", isGenerating && "opacity-50")}>
         <CardHeader>
           <CardTitle className="text-base">Configuration</CardTitle>
         </CardHeader>
@@ -160,7 +300,11 @@ export default function SimulatePage() {
           <div className="grid gap-6 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="severity">Artifact Severity</Label>
-              <Select value={severity} onValueChange={setSeverity}>
+              <Select
+                value={severity}
+                onValueChange={setSeverity}
+                disabled={isGenerating}
+              >
                 <SelectTrigger id="severity">
                   <SelectValue />
                 </SelectTrigger>
@@ -183,7 +327,11 @@ export default function SimulatePage() {
 
             <div className="space-y-2">
               <Label htmlFor="count">Number of Sessions</Label>
-              <Select value={count} onValueChange={setCount}>
+              <Select
+                value={count}
+                onValueChange={setCount}
+                disabled={isGenerating}
+              >
                 <SelectTrigger id="count">
                   <SelectValue />
                 </SelectTrigger>
@@ -201,6 +349,45 @@ export default function SimulatePage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Generation Progress */}
+      {isGenerating && (
+        <Card className="glass border-primary/50 bg-primary/5">
+          <CardContent className="py-4">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  {generationProgress.status === "complete" ? (
+                    <CheckCircle2 className="h-5 w-5 text-success" />
+                  ) : (
+                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                  )}
+                  <div>
+                    <p className="font-medium">
+                      {generationProgress.status === "generating"
+                        ? "Generating synthetic sessions..."
+                        : generationProgress.status === "processing"
+                          ? "Processing detection pipeline..."
+                          : "Complete!"}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {generationProgress.status === "generating"
+                        ? "Creating synthetic images with attack artifacts"
+                        : generationProgress.status === "processing"
+                          ? "Running face matching, PAD, and document analysis"
+                          : "Redirecting to sessions..."}
+                    </p>
+                  </div>
+                </div>
+                <span className="text-sm font-mono text-muted-foreground">
+                  {generationProgress.current}/{generationProgress.total}
+                </span>
+              </div>
+              <Progress value={progressPercent} className="h-2" />
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Info Box */}
       <Card className="glass border-primary/30 bg-primary/5">
@@ -221,18 +408,26 @@ export default function SimulatePage() {
 
       {/* Submit */}
       <div className="flex justify-end gap-4">
-        <Button variant="outline" onClick={() => router.push("/sessions")}>
+        <Button
+          variant="outline"
+          onClick={() => router.push("/sessions")}
+          disabled={isGenerating}
+        >
           Cancel
         </Button>
         <Button
           size="lg"
-          disabled={!selectedFamily || generateMutation.isPending}
+          disabled={!selectedFamily || isGenerating}
           onClick={() => generateMutation.mutate()}
         >
-          {generateMutation.isPending ? (
+          {isGenerating ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Generating...
+              {generationProgress.status === "generating"
+                ? "Generating..."
+                : generationProgress.status === "processing"
+                  ? "Processing..."
+                  : "Complete!"}
             </>
           ) : (
             <>
@@ -245,15 +440,3 @@ export default function SimulatePage() {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-

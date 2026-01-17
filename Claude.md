@@ -62,6 +62,10 @@ The core value proposition: test your KYC fraud detection without using real dee
 | TanStack Query | 5.x | Server state management |
 | Recharts | 2.x | Data visualization |
 | react-dropzone | 14.x | File upload handling |
+| cmdk | 1.x | Command palette (⌘K) |
+| next-themes | 0.4.x | Dark/light mode with system preference |
+| @tanstack/react-virtual | 3.x | List virtualization for large tables |
+| framer-motion | 11.x | Animations and micro-interactions |
 
 ### Backend (`/backend`)
 | Package | Version | Purpose |
@@ -143,6 +147,8 @@ Copy `env.example` to `.env` and configure:
 - **API proxy**: All backend calls go through `/api/[...path]/route.ts` to handle auth
 - **React Query**: Server state with automatic caching/invalidation
 - **shadcn/ui**: Components in `/components/ui/` following Radix patterns
+- **Error handling**: User-friendly error messages via `lib/errors.ts`, error boundaries, inline retry states
+- **Mobile-first**: Responsive layouts with mobile nav drawer, command palette, bottom-safe padding
 
 ### Database
 
@@ -164,8 +170,49 @@ Copy `env.example` to `.env` and configure:
 | `backend/app/services/reason_codes.py` | Reason code definitions |
 | `frontend/app/api/[...path]/route.ts` | Backend proxy |
 | `frontend/lib/api.ts` | API client functions |
+| `frontend/lib/errors.ts` | Error parsing and user-friendly messages |
 | `simulator/generator.py` | Synthetic artifact generator |
 | `simulator/base_images.py` | Synthetic selfie/ID document image generation |
+
+## Frontend Components
+
+### UI Components (`/frontend/components/ui/`)
+| Component | Purpose |
+|-----------|---------|
+| `animations.tsx` | Framer Motion animations: SuccessAnimation, ProgressRing, AnimatedNumber, FadeIn, ScaleIn, Pulse, ProcessingSpinner |
+| `sheet.tsx` | Slide-out drawer (Radix Dialog-based) |
+| `command.tsx` | Command palette using cmdk |
+| `skeleton.tsx` | Shimmer loading skeletons with variants |
+| `empty-state.tsx` | Illustrated empty states with CTAs |
+| `lightbox.tsx` | Full-screen image viewer with zoom/rotate |
+| `error-boundary.tsx` | Error boundary + inline error states |
+| `optimized-image.tsx` | next/image wrapper with blur placeholder, loading states |
+
+### Layout Components (`/frontend/components/layout/`)
+| Component | Purpose |
+|-----------|---------|
+| `navbar.tsx` | Top navigation with mobile menu trigger + command palette |
+| `sidebar.tsx` | Desktop sidebar navigation with theme toggle |
+| `mobile-nav.tsx` | Mobile slide-out navigation drawer |
+| `command-palette.tsx` | ⌘K command palette with navigation |
+| `connection-status.tsx` | Offline/online status indicator |
+| `getting-started.tsx` | Onboarding wizard card |
+| `theme-toggle.tsx` | Dark/light/system theme toggle (icon, compact, select variants) |
+
+### Session Components (`/frontend/components/sessions/`)
+| Component | Purpose |
+|-----------|---------|
+| `face-comparison.tsx` | Side-by-side face comparison with similarity |
+| `evidence-viewer.tsx` | Structured evidence display (scores as bars) |
+| `processing-timeline.tsx` | Processing step timeline/stepper |
+| `session-card.tsx` | Session list item card |
+| `media-preview.tsx` | Image preview with loading states |
+| `reason-code-badge.tsx` | Reason code display badge |
+
+### Metrics Components (`/frontend/components/metrics/`)
+| Component | Purpose |
+|-----------|---------|
+| `confusion-matrix.tsx` | Attack type vs decision matrix |
 
 ## Reason Code System
 
@@ -263,6 +310,30 @@ alembic downgrade -1
 
 4. ~~**Face Boundary Mismatch Detection**~~: `PADAnalyzer` now implements `_detect_face_boundary_mismatch()` using skin segmentation, boundary extraction, and analysis of color discontinuity, texture mismatch, and edge sharpness. Emits `PAD_FACE_BOUNDARY_MISMATCH` for suspected face swaps.
 
+5. ~~**Mobile Navigation & Command Palette**~~: Implemented slide-out mobile drawer using Radix Sheet, command palette (⌘K) with cmdk for quick navigation across all breakpoints.
+
+6. ~~**Empty States & Onboarding**~~: Added illustrated empty states with CTAs for sessions/metrics pages. Getting Started onboarding card shows on dashboard when no sessions exist.
+
+7. ~~**Skeleton Loading States**~~: Created reusable skeleton components with shimmer animation. Variants for stat cards, session rows, tables. Applied throughout dashboard, sessions, and metrics pages.
+
+8. ~~**Error Handling & Feedback**~~: Added `lib/errors.ts` for user-friendly error messages, `ErrorBoundary` component with recovery, `InlineError` for section-level errors with retry, `ConnectionStatus` for offline detection.
+
+9. ~~**Confusion Matrix Visualization**~~: The existing `ConfusionMatrix` component is now integrated into the metrics page, showing actual attack types vs predicted decisions.
+
+10. ~~**Chart Drill-down Navigation**~~: Pie chart and bar chart on metrics page now support click-to-filter navigation to sessions page.
+
+11. ~~**Session Detail Enhancements**~~: Added `Lightbox` for full-screen image viewing with zoom/rotate/download, `FaceComparison` for side-by-side face matching with similarity score, `EvidenceViewer` for structured evidence display (scores as progress bars), `ProcessingTimeline` showing step-by-step processing status.
+
+12. ~~**Form UX Improvements**~~: Upload page now has client-side validation with real-time feedback (file size, format, dimensions), upload progress bars per file, auto-detection of device info from `navigator.userAgent`, and image quality checks that warn if images are blurry or too small.
+
+13. ~~**Dark/Light Mode Toggle**~~: Added `next-themes` integration with system preference detection and manual override. Theme toggle in navbar and sidebar footer. CSS variables updated for proper light mode support.
+
+14. ~~**Performance & Polish**~~: Switched to `next/image` with blur placeholders via `OptimizedImage` component. Added virtualization with `@tanstack/react-virtual` for session tables with 50+ rows. Session rows prefetch on hover via `router.prefetch()`. Optimistic updates when generating synthetic sessions.
+
+15. ~~**Micro-interactions & Visual Feedback**~~: Added Framer Motion for animations. Cards now have `glass-interactive` class with hover scale/shadow/glow effects. Created `SuccessAnimation` component with checkmark + ripple effect shown after upload completion. Added `ProgressRing` animated component for upload progress. Button press animations, input focus glow, and smooth transitions throughout.
+
+16. ~~**Search Functionality**~~: Sessions page now has a search input with 300ms debounce that filters by session ID, attack family, source, or status. Command palette (⌘K) enhanced to search sessions in real-time as you type, showing up to 5 results with ability to view all matches. Backend `GET /sessions` endpoint supports `search` query parameter.
+
 ### Medium Priority
 
 1. **Worker Service**: Implement durable job queue processing in `backend/app/worker.py` for Railway worker deployment.
@@ -305,6 +376,16 @@ See `docs/deployment.md` for full details:
 | pgvector | Requires PostgreSQL extension enabled in production. |
 | Next.js | Currently on v16.x. App Router is stable. |
 | Modal | API changes frequently. Pin version carefully. |
+
+## Keyboard Shortcuts
+
+| Shortcut | Context | Action |
+|----------|---------|--------|
+| `⌘K` / `Ctrl+K` | Global | Open command palette |
+| `+` / `-` | Lightbox | Zoom in/out |
+| `R` | Lightbox | Rotate image |
+| `0` | Lightbox | Reset zoom/rotation |
+| `Esc` | Lightbox/Dialogs | Close |
 
 ## Troubleshooting
 

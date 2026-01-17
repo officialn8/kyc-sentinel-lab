@@ -15,6 +15,8 @@ import Link from "next/link";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { SkeletonStatCard } from "@/components/ui/skeleton";
+import { GettingStarted } from "@/components/layout/getting-started";
 
 export default function DashboardPage() {
   const { data: metrics, isLoading } = useQuery({
@@ -74,26 +76,36 @@ export default function DashboardPage() {
     },
   ];
 
+  // Determine onboarding progress
+  const hasNoSessions = !isLoading && metrics?.total_sessions === 0;
+  const completedSteps: number[] = [];
+  if (metrics?.total_sessions && metrics.total_sessions > 0) {
+    completedSteps.push(1, 2, 3); // Has sessions, likely completed first 3 steps
+  }
+  if (metrics?.completed_sessions && metrics.completed_sessions > 0) {
+    completedSteps.push(4); // Has viewed results
+  }
+
   return (
     <div className="space-y-8">
       {/* Hero Section */}
-      <div className="relative overflow-hidden rounded-2xl border border-border/50 bg-card/50 p-8 glass">
+      <div className="relative overflow-hidden rounded-2xl border border-border/50 bg-card/50 p-6 md:p-8 glass">
         <div className="absolute inset-0 bg-gradient-to-r from-primary/10 via-transparent to-transparent" />
         <div className="relative">
           <div className="flex items-center gap-3 mb-4">
             <div className="p-2 rounded-lg bg-primary/20">
               <Shield className="h-6 w-6 text-primary" />
             </div>
-            <h1 className="text-3xl font-bold tracking-tight">
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
               KYC Sentinel Lab
             </h1>
           </div>
-          <p className="text-muted-foreground max-w-2xl mb-6">
+          <p className="text-muted-foreground max-w-2xl mb-6 text-sm md:text-base">
             Red-team your remote identity verification flow with safe, synthetic
             attacks and explainable detection. Simulate modern KYC attack
             patterns and evaluate your detection capabilities.
           </p>
-          <div className="flex gap-4">
+          <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
             <Button asChild>
               <Link href="/upload">Upload Session</Link>
             </Button>
@@ -104,28 +116,36 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* Getting Started Card - Show when no sessions */}
+      {hasNoSessions && (
+        <GettingStarted completedSteps={completedSteps} />
+      )}
+
       {/* Stats Grid */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {stats.map((stat) => (
-          <Card key={stat.title} className="glass">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                {stat.title}
-              </CardTitle>
-              <stat.icon className={`h-4 w-4 ${stat.color}`} />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                {isLoading ? (
-                  <div className="h-8 w-20 animate-pulse rounded bg-muted" />
-                ) : (
-                  stat.value
-                )}
-              </div>
-              <p className="text-xs text-muted-foreground">{stat.description}</p>
-            </CardContent>
-          </Card>
-        ))}
+      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
+        {isLoading ? (
+          // Skeleton loading state
+          Array.from({ length: 4 }).map((_, i) => (
+            <SkeletonStatCard key={i} />
+          ))
+        ) : (
+          stats.map((stat) => (
+            <Card key={stat.title} className="glass">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-xs md:text-sm font-medium text-muted-foreground">
+                  {stat.title}
+                </CardTitle>
+                <stat.icon className={`h-4 w-4 ${stat.color}`} />
+              </CardHeader>
+              <CardContent>
+                <div className="text-xl md:text-2xl font-bold">
+                  {stat.value}
+                </div>
+                <p className="text-xs text-muted-foreground">{stat.description}</p>
+              </CardContent>
+            </Card>
+          ))
+        )}
       </div>
 
       {/* Decision Distribution */}

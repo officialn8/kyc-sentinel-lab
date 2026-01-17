@@ -171,6 +171,7 @@ export const api = {
     source?: string;
     attack_family?: string;
     decision?: string;
+    search?: string;
   }) => {
     const searchParams = new URLSearchParams();
     if (params) {

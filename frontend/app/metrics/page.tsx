@@ -1,11 +1,13 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
 import {
   BarChart3,
   CheckCircle2,
   Clock,
   FileWarning,
+  Grid3X3,
   Target,
   TrendingUp,
 } from "lucide-react";
@@ -24,6 +26,10 @@ import {
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { ConfusionMatrix } from "@/components/metrics/confusion-matrix";
+import { SkeletonStatCard } from "@/components/ui/skeleton";
+import { EmptyMetricsState } from "@/components/ui/empty-state";
+import { InlineError } from "@/components/ui/error-boundary";
 
 const COLORS = {
   pass: "#22c55e",
@@ -37,20 +43,64 @@ const COLORS = {
 };
 
 export default function MetricsPage() {
-  const { data: summary, isLoading: loadingSummary } = useQuery({
+  const router = useRouter();
+
+  const {
+    data: summary,
+    isLoading: loadingSummary,
+    error: summaryError,
+    refetch: refetchSummary,
+  } = useQuery({
     queryKey: ["metrics", "summary"],
     queryFn: () => api.getMetricsSummary(),
   });
 
-  const { data: breakdown, isLoading: loadingBreakdown } = useQuery({
+  const {
+    data: breakdown,
+    isLoading: loadingBreakdown,
+    error: breakdownError,
+    refetch: refetchBreakdown,
+  } = useQuery({
     queryKey: ["metrics", "breakdown"],
     queryFn: () => api.getAttackFamilyBreakdown(),
   });
 
-  const { data: confusion, isLoading: loadingConfusion } = useQuery({
+  const {
+    data: confusion,
+    isLoading: loadingConfusion,
+    error: confusionError,
+    refetch: refetchConfusion,
+  } = useQuery({
     queryKey: ["metrics", "confusion"],
     queryFn: () => api.getConfusionMatrix(),
   });
+
+  // Handle drill-down navigation
+  const handleDecisionClick = (decision: string) => {
+    router.push(`/sessions?decision=${decision.toLowerCase()}`);
+  };
+
+  const handleFamilyClick = (family: string) => {
+    router.push(`/sessions?attack_family=${family.replace(" ", "_")}`);
+  };
+
+  // Show empty state if no sessions
+  if (!loadingSummary && summary?.total_sessions === 0) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <BarChart3 className="h-6 w-6 text-primary" />
+            Detection Metrics
+          </h1>
+          <p className="text-muted-foreground">
+            Aggregate performance metrics and detection rates
+          </p>
+        </div>
+        <EmptyMetricsState />
+      </div>
+    );
+  }
 
   // Prepare pie chart data
   const decisionData = summary
@@ -83,93 +133,88 @@ export default function MetricsPage() {
       </div>
 
       {/* Summary Stats */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card className="glass">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Total Sessions
-            </CardTitle>
-            <Target className="h-4 w-4 text-primary" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {loadingSummary ? (
-                <div className="h-8 w-16 animate-pulse rounded bg-muted" />
-              ) : (
-                summary?.total_sessions ?? 0
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {summary?.completed_sessions ?? 0} completed
-            </p>
-          </CardContent>
-        </Card>
+      {summaryError ? (
+        <InlineError error={summaryError} onRetry={() => refetchSummary()} />
+      ) : (
+        <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
+          {loadingSummary ? (
+            Array.from({ length: 4 }).map((_, i) => <SkeletonStatCard key={i} />)
+          ) : (
+            <>
+              <Card className="glass">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-xs md:text-sm font-medium text-muted-foreground">
+                    Total Sessions
+                  </CardTitle>
+                  <Target className="h-4 w-4 text-primary" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-xl md:text-2xl font-bold">
+                    {summary?.total_sessions ?? 0}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {summary?.completed_sessions ?? 0} completed
+                  </p>
+                </CardContent>
+              </Card>
 
-        <Card className="glass">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Detection Rate
-            </CardTitle>
-            <TrendingUp className="h-4 w-4 text-success" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-success">
-              {loadingSummary ? (
-                <div className="h-8 w-16 animate-pulse rounded bg-muted" />
-              ) : (
-                `${summary?.detection_rate ?? 0}%`
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Attacks correctly flagged
-            </p>
-          </CardContent>
-        </Card>
+              <Card className="glass">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-xs md:text-sm font-medium text-muted-foreground">
+                    Detection Rate
+                  </CardTitle>
+                  <TrendingUp className="h-4 w-4 text-success" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-xl md:text-2xl font-bold text-success">
+                    {summary?.detection_rate ?? 0}%
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Attacks correctly flagged
+                  </p>
+                </CardContent>
+              </Card>
 
-        <Card className="glass">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Avg Risk Score
-            </CardTitle>
-            <BarChart3 className="h-4 w-4 text-warning" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {loadingSummary ? (
-                <div className="h-8 w-16 animate-pulse rounded bg-muted" />
-              ) : (
-                summary?.avg_risk_score ?? 0
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground">Out of 100</p>
-          </CardContent>
-        </Card>
+              <Card className="glass">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-xs md:text-sm font-medium text-muted-foreground">
+                    Avg Risk Score
+                  </CardTitle>
+                  <BarChart3 className="h-4 w-4 text-warning" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-xl md:text-2xl font-bold">
+                    {summary?.avg_risk_score ?? 0}
+                  </div>
+                  <p className="text-xs text-muted-foreground">Out of 100</p>
+                </CardContent>
+              </Card>
 
-        <Card className="glass">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Failed Sessions
-            </CardTitle>
-            <FileWarning className="h-4 w-4 text-danger" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-danger">
-              {loadingSummary ? (
-                <div className="h-8 w-16 animate-pulse rounded bg-muted" />
-              ) : (
-                summary?.fail_count ?? 0
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground">High risk flagged</p>
-          </CardContent>
-        </Card>
-      </div>
+              <Card className="glass">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-xs md:text-sm font-medium text-muted-foreground">
+                    Failed Sessions
+                  </CardTitle>
+                  <FileWarning className="h-4 w-4 text-danger" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-xl md:text-2xl font-bold text-danger">
+                    {summary?.fail_count ?? 0}
+                  </div>
+                  <p className="text-xs text-muted-foreground">High risk flagged</p>
+                </CardContent>
+              </Card>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Decision Distribution Pie */}
         <Card className="glass">
           <CardHeader>
             <CardTitle>Decision Distribution</CardTitle>
+            <p className="text-xs text-muted-foreground">Click a segment to filter sessions</p>
           </CardHeader>
           <CardContent>
             <div className="h-[300px]">
@@ -183,6 +228,8 @@ export default function MetricsPage() {
                     outerRadius={100}
                     paddingAngle={5}
                     dataKey="value"
+                    onClick={(data) => handleDecisionClick(data.name)}
+                    style={{ cursor: "pointer" }}
                   >
                     {decisionData.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={entry.color} />
@@ -194,6 +241,10 @@ export default function MetricsPage() {
                       border: "1px solid hsl(var(--border))",
                       borderRadius: "8px",
                     }}
+                    formatter={(value: number, name: string) => [
+                      `${value} sessions`,
+                      name,
+                    ]}
                   />
                   <Legend />
                 </PieChart>
@@ -206,6 +257,7 @@ export default function MetricsPage() {
         <Card className="glass">
           <CardHeader>
             <CardTitle>Detection by Attack Family</CardTitle>
+            <p className="text-xs text-muted-foreground">Click a bar to filter sessions</p>
           </CardHeader>
           <CardContent>
             <div className="h-[300px]">
@@ -224,9 +276,22 @@ export default function MetricsPage() {
                       border: "1px solid hsl(var(--border))",
                       borderRadius: "8px",
                     }}
-                    formatter={(value: number) => [`${value}%`, "Detection Rate"]}
+                    formatter={(value: number, name: string, props: any) => [
+                      <div key="tooltip" className="space-y-1">
+                        <div>Detection Rate: {value}%</div>
+                        <div className="text-xs text-muted-foreground">
+                          {props.payload.detected} detected, {props.payload.missed} missed
+                        </div>
+                      </div>,
+                      "",
+                    ]}
                   />
-                  <Bar dataKey="rate" radius={[0, 4, 4, 0]}>
+                  <Bar
+                    dataKey="rate"
+                    radius={[0, 4, 4, 0]}
+                    onClick={(data) => handleFamilyClick(data.name)}
+                    style={{ cursor: "pointer" }}
+                  >
                     {familyData.map((entry, index) => (
                       <Cell
                         key={`cell-${index}`}
@@ -244,6 +309,30 @@ export default function MetricsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Confusion Matrix */}
+      <Card className="glass">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Grid3X3 className="h-5 w-5 text-primary" />
+            Confusion Matrix
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Actual attack types vs predicted decisions
+          </p>
+        </CardHeader>
+        <CardContent>
+          {confusionError ? (
+            <InlineError error={confusionError} onRetry={() => refetchConfusion()} />
+          ) : loadingConfusion ? (
+            <div className="h-64 flex items-center justify-center">
+              <div className="animate-pulse text-muted-foreground">Loading confusion matrix...</div>
+            </div>
+          ) : confusion ? (
+            <ConfusionMatrix cells={confusion.cells} total={confusion.total} />
+          ) : null}
+        </CardContent>
+      </Card>
 
       {/* Attack Family Details */}
       <Card className="glass">

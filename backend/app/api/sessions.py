@@ -5,7 +5,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_, cast, String
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import DbSession, Storage
@@ -186,10 +186,27 @@ async def list_sessions(
     source: Optional[str] = Query(default=None),
     attack_family: Optional[str] = Query(default=None),
     decision: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None, description="Search by session ID, attack family, or status"),
 ) -> SessionListResponse:
-    """List sessions with filters and pagination."""
+    """List sessions with filters, search, and pagination."""
     # Build query
     query = select(KYCSession)
+
+    # Text search across multiple fields
+    if search:
+        search_term = f"%{search.lower()}%"
+        query = query.where(
+            or_(
+                # Search by session ID (UUID cast to string for LIKE matching)
+                cast(KYCSession.id, String).ilike(search_term),
+                # Search by attack family
+                func.lower(KYCSession.attack_family).like(search_term),
+                # Search by status
+                func.lower(KYCSession.status).like(search_term),
+                # Search by source
+                func.lower(KYCSession.source).like(search_term),
+            )
+        )
 
     if status:
         query = query.where(KYCSession.status == status)

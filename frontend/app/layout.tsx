@@ -4,6 +4,7 @@ import "./globals.css";
 import { Providers } from "./providers";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Navbar } from "@/components/layout/navbar";
+import { ConnectionStatus } from "@/components/layout/connection-status";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -27,15 +28,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
+    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning>
       <body className={`${inter.className} min-h-screen antialiased`}>
         <Providers>
+          <ConnectionStatus />
           <div className="flex h-screen overflow-hidden">
             <Sidebar />
             <div className="flex flex-1 flex-col overflow-hidden">
               <Navbar />
               <main className="flex-1 overflow-auto gradient-mesh">
-                <div className="container py-6">{children}</div>
+                <div className="container py-4 md:py-6 pb-20 lg:pb-6">{children}</div>
               </main>
             </div>
           </div>

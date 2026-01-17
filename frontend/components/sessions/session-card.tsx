@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useCallback } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -24,12 +26,18 @@ const statusConfig = {
 } as const;
 
 export function SessionCard({ session }: SessionCardProps) {
+  const router = useRouter();
   const status = statusConfig[session.status];
   const StatusIcon = status.icon;
 
+  // Prefetch on hover for faster navigation
+  const handleMouseEnter = useCallback(() => {
+    router.prefetch(`/sessions/${session.id}`);
+  }, [router, session.id]);
+
   return (
-    <Link href={`/sessions/${session.id}`}>
-      <Card className="glass hover:border-primary/50 transition-colors cursor-pointer">
+    <Link href={`/sessions/${session.id}`} onMouseEnter={handleMouseEnter}>
+      <Card className="glass-interactive cursor-pointer">
         <CardContent className="p-4">
           <div className="flex items-start justify-between">
             <div className="space-y-1">
@@ -48,7 +56,7 @@ export function SessionCard({ session }: SessionCardProps) {
               <span className="text-xs text-muted-foreground">
                 {formatRelativeTime(session.created_at)}
               </span>
-              <ExternalLink className="h-4 w-4 text-muted-foreground" />
+              <ExternalLink className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
             </div>
           </div>
         </CardContent>

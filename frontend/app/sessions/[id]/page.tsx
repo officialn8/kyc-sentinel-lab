@@ -2,7 +2,6 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
-import Image from "next/image";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -13,8 +12,10 @@ import {
   Loader2,
   Scan,
   User,
+  ZoomIn,
 } from "lucide-react";
 import Link from "next/link";
+import { AspectImage } from "@/components/ui/optimized-image";
 import { api, Reason } from "@/lib/api";
 import { formatDate, getRiskColor, formatPercentage, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { LightboxTrigger } from "@/components/ui/lightbox";
+import { Skeleton } from "@/components/ui/skeleton";
+import { InlineError } from "@/components/ui/error-boundary";
+import { EvidenceViewer } from "@/components/sessions/evidence-viewer";
+import { FaceComparison } from "@/components/sessions/face-comparison";
+import { ProcessingTimeline, ProcessingTimelineCompact } from "@/components/sessions/processing-timeline";
 
 const severityIcons = {
   info: Info,
@@ -39,7 +46,7 @@ export default function SessionDetailPage() {
   const params = useParams();
   const sessionId = params.id as string;
 
-  const { data: session, isLoading } = useQuery({
+  const { data: session, isLoading, error, refetch } = useQuery({
     queryKey: ["session", sessionId],
     queryFn: () => api.getSession(sessionId),
     enabled: !!sessionId,
@@ -53,11 +60,40 @@ export default function SessionDetailPage() {
   if (isLoading) {
     return (
       <div className="space-y-6">
-        <div className="h-8 w-48 animate-pulse rounded bg-muted" />
-        <div className="grid gap-6 md:grid-cols-2">
-          <div className="h-64 animate-pulse rounded-lg bg-muted" />
-          <div className="h-64 animate-pulse rounded-lg bg-muted" />
+        <div className="flex items-center gap-4">
+          <Skeleton className="h-10 w-10 rounded" />
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-48" />
+            <Skeleton className="h-4 w-64" />
+          </div>
         </div>
+        <Skeleton className="h-20 w-full" />
+        <div className="grid gap-6 lg:grid-cols-3">
+          <div className="lg:col-span-2 space-y-6">
+            <Skeleton className="h-96" />
+            <Skeleton className="h-64" />
+          </div>
+          <div className="space-y-6">
+            <Skeleton className="h-48" />
+            <Skeleton className="h-64" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-4">
+          <Button variant="ghost" size="icon" asChild>
+            <Link href="/sessions">
+              <ArrowLeft className="h-5 w-5" />
+            </Link>
+          </Button>
+          <h1 className="text-2xl font-bold">Session Details</h1>
+        </div>
+        <InlineError error={error} onRetry={() => refetch()} />
       </div>
     );
   }
@@ -99,16 +135,36 @@ export default function SessionDetailPage() {
         </div>
       </div>
 
-      {/* Processing Banner */}
+      {/* Processing Banner with Timeline */}
       {session.status === "processing" && (
         <Card className="glass border-l-4 border-l-primary bg-primary/5">
-          <CardContent className="flex items-center gap-4 py-4">
-            <Loader2 className="h-6 w-6 animate-spin text-primary" />
-            <div>
-              <p className="font-semibold text-primary">Processing</p>
-              <p className="text-sm text-muted-foreground">
-                Running face matching, document analysis, and PAD checks...
-              </p>
+          <CardContent className="py-4">
+            <div className="flex items-center gap-4 mb-4">
+              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+              <div>
+                <p className="font-semibold text-primary">Processing</p>
+                <p className="text-sm text-muted-foreground">
+                  Running face matching, document analysis, and PAD checks...
+                </p>
+              </div>
+            </div>
+            <ProcessingTimelineCompact status={session.status} />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Failed Banner */}
+      {session.status === "failed" && (
+        <Card className="glass border-l-4 border-l-danger bg-danger/5">
+          <CardContent className="py-4">
+            <div className="flex items-center gap-4">
+              <AlertTriangle className="h-6 w-6 text-danger" />
+              <div>
+                <p className="font-semibold text-danger">Processing Failed</p>
+                <p className="text-sm text-muted-foreground">
+                  An error occurred while analyzing this session. Please try re-uploading.
+                </p>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -146,9 +202,32 @@ export default function SessionDetailPage() {
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Left: Media Preview */}
         <div className="lg:col-span-2 space-y-6">
+          {/* Face Comparison */}
+          {session.status === "completed" && (
+            <Card className="glass">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <User className="h-5 w-5" />
+                  Face Comparison
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <FaceComparison
+                  selfieUrl={session.selfie_url}
+                  selfieCropUrl={session.selfie_crop_url}
+                  idUrl={session.id_url}
+                  idCropUrl={session.id_crop_url}
+                  similarity={result?.face_similarity}
+                />
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Media Assets */}
           <Card className="glass">
             <CardHeader>
               <CardTitle>Media Assets</CardTitle>
+              <p className="text-xs text-muted-foreground">Click images to zoom</p>
             </CardHeader>
             <CardContent>
               <div className="grid gap-4 md:grid-cols-2">
@@ -157,28 +236,31 @@ export default function SessionDetailPage() {
                     <User className="h-4 w-4" />
                     Selfie
                   </p>
-                  <div className="aspect-[3/4] rounded-lg bg-muted overflow-hidden">
-                    {session.selfie_url ? (
-                      <img
-                        src={session.selfie_url}
-                        alt="Selfie"
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className="flex items-center justify-center h-full text-muted-foreground">
-                        No selfie uploaded
+                  {session.selfie_url ? (
+                    <LightboxTrigger
+                      src={session.selfie_url}
+                      alt="Selfie"
+                      title="Selfie Image"
+                    >
+                      <div className="relative group cursor-pointer">
+                        <AspectImage
+                          src={session.selfie_url}
+                          alt="Selfie"
+                          aspectRatio="portrait"
+                          priority
+                        />
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center rounded-lg">
+                          <ZoomIn className="h-8 w-8 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
                       </div>
-                    )}
-                  </div>
-                  {session.selfie_crop_url && (
-                    <div className="mt-2">
-                      <p className="text-xs text-muted-foreground mb-1">Face Crop</p>
-                      <img
-                        src={session.selfie_crop_url}
-                        alt="Selfie face crop"
-                        className="h-20 w-20 object-cover rounded border border-border"
-                      />
-                    </div>
+                    </LightboxTrigger>
+                  ) : (
+                    <AspectImage
+                      src={null}
+                      alt="Selfie"
+                      aspectRatio="portrait"
+                      placeholderText="No selfie uploaded"
+                    />
                   )}
                 </div>
                 <div className="space-y-2">
@@ -186,28 +268,31 @@ export default function SessionDetailPage() {
                     <FileText className="h-4 w-4" />
                     ID Document
                   </p>
-                  <div className="aspect-[3/4] rounded-lg bg-muted overflow-hidden">
-                    {session.id_url ? (
-                      <img
-                        src={session.id_url}
-                        alt="ID Document"
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className="flex items-center justify-center h-full text-muted-foreground">
-                        No ID uploaded
+                  {session.id_url ? (
+                    <LightboxTrigger
+                      src={session.id_url}
+                      alt="ID Document"
+                      title="ID Document Image"
+                    >
+                      <div className="relative group cursor-pointer">
+                        <AspectImage
+                          src={session.id_url}
+                          alt="ID Document"
+                          aspectRatio="portrait"
+                          priority
+                        />
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center rounded-lg">
+                          <ZoomIn className="h-8 w-8 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
                       </div>
-                    )}
-                  </div>
-                  {session.id_crop_url && (
-                    <div className="mt-2">
-                      <p className="text-xs text-muted-foreground mb-1">Face Crop</p>
-                      <img
-                        src={session.id_crop_url}
-                        alt="ID face crop"
-                        className="h-20 w-20 object-cover rounded border border-border"
-                      />
-                    </div>
+                    </LightboxTrigger>
+                  ) : (
+                    <AspectImage
+                      src={null}
+                      alt="ID Document"
+                      aspectRatio="portrait"
+                      placeholderText="No ID uploaded"
+                    />
                   )}
                 </div>
               </div>
@@ -229,16 +314,16 @@ export default function SessionDetailPage() {
                   return (
                     <div
                       key={reason.id}
-                      className="flex items-start gap-3 p-3 rounded-lg bg-muted/50"
+                      className="flex items-start gap-3 p-4 rounded-lg bg-muted/50 border border-border/30"
                     >
                       <Icon
                         className={cn(
-                          "h-5 w-5 mt-0.5",
+                          "h-5 w-5 mt-0.5 flex-shrink-0",
                           severityColors[reason.severity]
                         )}
                       />
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <code className="text-sm font-medium">
                             {reason.code}
                           </code>
@@ -258,9 +343,10 @@ export default function SessionDetailPage() {
                           {reason.message}
                         </p>
                         {Object.keys(reason.evidence).length > 0 && (
-                          <pre className="text-xs text-muted-foreground mt-2 p-2 bg-muted rounded">
-                            {JSON.stringify(reason.evidence, null, 2)}
-                          </pre>
+                          <div className="mt-3 p-3 bg-muted/70 rounded-lg border border-border/30">
+                            <p className="text-xs font-medium text-muted-foreground mb-2">Evidence</p>
+                            <EvidenceViewer evidence={reason.evidence} />
+                          </div>
                         )}
                       </div>
                     </div>
@@ -273,6 +359,22 @@ export default function SessionDetailPage() {
 
         {/* Right: Details */}
         <div className="space-y-6">
+          {/* Processing Timeline */}
+          <Card className="glass">
+            <CardHeader>
+              <CardTitle>Processing Steps</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ProcessingTimeline
+                status={session.status}
+                hasResult={!!result}
+                hasFaceMatch={result?.face_similarity !== undefined}
+                hasPadAnalysis={result?.pad_score !== undefined}
+                hasDocAnalysis={result?.doc_score !== undefined}
+              />
+            </CardContent>
+          </Card>
+
           {/* Scores */}
           {result && (
             <Card className="glass">

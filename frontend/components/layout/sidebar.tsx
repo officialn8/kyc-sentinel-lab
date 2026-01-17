@@ -11,6 +11,7 @@ import {
   Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ThemeToggle } from "@/components/layout/theme-toggle";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: Home },
@@ -63,7 +64,11 @@ export function Sidebar() {
         </nav>
 
         {/* Footer */}
-        <div className="border-t border-border/50 p-4">
+        <div className="border-t border-border/50 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">Theme</span>
+            <ThemeToggle variant="compact" />
+          </div>
           <div className="rounded-lg bg-muted/50 p-3">
             <p className="text-xs font-medium text-muted-foreground">
               Detection Engine
