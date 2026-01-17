@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-# Install system dependencies for OpenCV and other ML libraries
+# Install system dependencies for OpenCV, ML libraries, and build tools
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender1 \
     libgomp1 \
+    build-essential \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
