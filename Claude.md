@@ -66,6 +66,7 @@ The core value proposition: test your KYC fraud detection without using real dee
 | next-themes | 0.4.x | Dark/light mode with system preference |
 | @tanstack/react-virtual | 3.x | List virtualization for large tables |
 | framer-motion | 11.x | Animations and micro-interactions |
+| @vercel/analytics | - | Page view tracking (auto-enabled on Vercel) |
 
 ### Backend (`/backend`)
 | Package | Version | Purpose |
@@ -354,11 +355,25 @@ alembic downgrade -1
 
 20. ~~**Scoring Service Updates**~~: Enhanced `compute_risk_score()` to incorporate liveness signals and quality adjustments. Added `compute_liveness_score()` for combining blink detection, texture analysis, and motion entropy. Critical liveness failures (`PAD_PRINTED_TEXTURE`, `PAD_FLAT_DEPTH`) now boost risk score. Document integrity failures (`DOC_MRZ_INVALID`) also increase risk.
 
+### Phase 2: Production Deployment (COMPLETED)
+
+21. ~~**Modal GPU Deployment**~~: Deployed Modal app with three GPU-accelerated functions (`extract_frames`, `analyze_face`, `analyze_document`) running on T4 instances. Created `r2-credentials` Modal secret for direct R2 storage access. Fixed function invocation to use `modal.Function.from_name()` for calling deployed functions from Railway. Increased memory allocation to 4GB for PaddleOCR models.
+
+22. ~~**Railway Backend Deployment**~~: Deployed FastAPI backend to Railway with proper environment configuration. Created `Dockerfile` with OpenCV dependencies (`libgl1`, `libglib2.0-0`, etc.) and build tools (`build-essential`, `g++`) for compiling InsightFace Cython extensions.
+
+23. ~~**Railway Worker Service**~~: Set up separate Railway service for durable job queue processing. Uses same Dockerfile with different start command (`python -m app.worker`). Configured with `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` for Modal API access.
+
+24. ~~**Cloudflare R2 CORS Configuration**~~: Configured CORS policy on R2 bucket to allow presigned uploads from Vercel frontend origin. Enables direct browser-to-R2 file uploads.
+
+25. ~~**Vercel Frontend Deployment**~~: Deployed Next.js frontend to Vercel. Fixed Suspense boundary issue in sessions page (wrapped `useSearchParams` in Suspense). Configured `BACKEND_URL` environment variable pointing to Railway backend.
+
+26. ~~**Vercel Analytics**~~: Added `@vercel/analytics` for automatic page view tracking. Analytics component added to root layout.
+
 ---
 
 ### Medium Priority
 
-1. **Worker Service**: Implement durable job queue processing in `backend/app/worker.py` for Railway worker deployment.
+1. ~~**Worker Service**~~: Implemented durable job queue processing in `backend/app/worker.py` for Railway worker deployment.
 
 2. **Batch Processing**: Add batch upload and simulation endpoints for bulk testing.
 
@@ -382,12 +397,25 @@ alembic downgrade -1
 
 See `docs/deployment.md` for full details:
 
-- **Frontend**: Vercel (auto-deploy from main branch)
-- **Backend API**: Railway service with `scripts/railway_start.sh`
-- **Worker**: Railway service with `scripts/railway_worker.sh`
-- **Database**: Railway Postgres with pgvector
-- **Storage**: Cloudflare R2 with CORS for presigned uploads
-- **GPU Processing**: Modal with `r2-credentials` secret
+- **Frontend**: Vercel (auto-deploy from main branch, `BACKEND_URL` env var points to Railway)
+- **Backend API**: Railway service using `Dockerfile` builder, start command: `./scripts/railway_start.sh`
+- **Worker**: Railway service using same `Dockerfile`, start command: `python -m app.worker`
+- **Database**: Railway Postgres with pgvector extension
+- **Storage**: Cloudflare R2 with CORS configured for Vercel origin
+- **GPU Processing**: Modal app `kyc-sentinel` with `r2-credentials` secret (T4 GPUs, 4GB memory)
+
+### Railway Environment Variables
+| Variable | Purpose |
+|----------|---------|
+| `DATABASE_URL` | Railway Postgres connection string |
+| `R2_ENDPOINT` | Cloudflare R2 endpoint URL |
+| `R2_ACCESS_KEY` | R2 access key |
+| `R2_SECRET_KEY` | R2 secret key |
+| `R2_BUCKET` | R2 bucket name |
+| `USE_MODAL` | Set to `true` for GPU processing |
+| `MODAL_TOKEN_ID` | Modal API token ID |
+| `MODAL_TOKEN_SECRET` | Modal API token secret |
+| `CORS_ORIGINS` | Vercel frontend URL |
 
 ## Dependencies to Watch
 
@@ -397,7 +425,7 @@ See `docs/deployment.md` for full details:
 | InsightFace | Uses ONNX Runtime. GPU requires `onnxruntime-gpu`. |
 | pgvector | Requires PostgreSQL extension enabled in production. |
 | Next.js | Currently on v16.x. App Router is stable. |
-| Modal | API changes frequently. Pin version carefully. |
+| Modal | API changes frequently. Use `modal.Function.from_name()` for deployed functions. |
 
 ## Keyboard Shortcuts
 

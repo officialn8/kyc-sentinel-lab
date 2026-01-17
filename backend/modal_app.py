@@ -274,8 +274,16 @@ def analyze_face(
         best_selfie = max(selfie_faces, key=lambda f: f["confidence"])
         best_id = max(id_faces, key=lambda f: f["confidence"])
         
-        # Cosine similarity (embeddings are normalized)
-        similarity = float(np.dot(best_selfie["embedding"], best_id["embedding"]))
+        # Normalize embeddings for cosine similarity
+        selfie_emb = best_selfie["embedding"]
+        id_emb = best_id["embedding"]
+        selfie_norm = selfie_emb / np.linalg.norm(selfie_emb)
+        id_norm = id_emb / np.linalg.norm(id_emb)
+        
+        # Cosine similarity (dot product of normalized vectors)
+        similarity = float(np.dot(selfie_norm, id_norm))
+        # Clamp to valid range
+        similarity = max(-1.0, min(1.0, similarity))
         evidence["face_similarity"] = similarity
         
         match = similarity >= similarity_threshold
