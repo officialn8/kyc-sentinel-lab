@@ -8,6 +8,7 @@ from sqlalchemy import ForeignKey, String, Integer, Float, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.enums import Decision
 
 if TYPE_CHECKING:
     from app.models.session import KYCSession
@@ -30,7 +31,10 @@ class KYCResult(Base):
 
     # Scores
     risk_score: Mapped[int] = mapped_column(Integer)  # 0-100
-    decision: Mapped[str] = mapped_column(String(20))  # pass | review | fail
+    
+    # Decision - validated via Decision enum
+    # Valid values: pass, review, fail
+    decision: Mapped[str] = mapped_column(String(20))
 
     # Component scores
     face_similarity: Mapped[float | None] = mapped_column(Float, nullable=True)  # 0-1

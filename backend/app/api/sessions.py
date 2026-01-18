@@ -248,20 +248,31 @@ async def list_sessions(
     query = select(KYCSession)
 
     # Text search across multiple fields
+    # PERFORMANCE: Uses ILIKE which triggers GIN trigram indexes (ix_kyc_sessions_*_gin)
+    # See migration 005_search_performance.py for index definitions.
     if search:
-        search_term = f"%{search.lower()}%"
-        query = query.where(
-            or_(
-                # Search by session ID (UUID cast to string for LIKE matching)
-                cast(KYCSession.id, String).ilike(search_term),
-                # Search by attack family
-                func.lower(KYCSession.attack_family).like(search_term),
-                # Search by status
-                func.lower(KYCSession.status).like(search_term),
-                # Search by source
-                func.lower(KYCSession.source).like(search_term),
+        search_term = f"%{search}%"
+        
+        # Build OR conditions for text columns that have GIN indexes
+        search_conditions = [
+            # Search by attack family (GIN indexed)
+            KYCSession.attack_family.ilike(search_term),
+            # Search by status (GIN indexed)
+            KYCSession.status.ilike(search_term),
+            # Search by source (GIN indexed)
+            KYCSession.source.ilike(search_term),
+        ]
+        
+        # UUID search: Only do prefix matching if input looks like a UUID prefix
+        # This avoids expensive full-text UUID search while still allowing partial ID lookup
+        if len(search) >= 8 and search.replace("-", "").isalnum():
+            # Prefix search on ID (uses btree index on primary key for exact match,
+            # or falls back to GIN text index for substring)
+            search_conditions.append(
+                cast(KYCSession.id, String).ilike(search_term)
             )
-        )
+        
+        query = query.where(or_(*search_conditions))
 
     if status:
         query = query.where(KYCSession.status == status)

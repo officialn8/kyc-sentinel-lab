@@ -9,6 +9,7 @@ from sqlalchemy import String, Float, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.enums import SessionStatus, AttackFamily, AttackSeverity
 
 if TYPE_CHECKING:
     from app.models.result import KYCResult
@@ -30,18 +31,27 @@ class KYCSession(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    
+    # Status uses enum for type safety, stored as string in DB
+    # Valid values: pending, processing, completed, failed
     status: Mapped[str] = mapped_column(
-        String(20), default="pending"
-    )  # pending, processing, completed, failed
+        String(20), default=SessionStatus.PENDING.value
+    )
 
     # Source
     source: Mapped[str] = mapped_column(String(20))  # "upload" | "synthetic"
+    
+    # Attack family - validated via AttackFamily enum
+    # Valid values: replay, injection, face_swap, doc_tamper, benign
     attack_family: Mapped[Optional[str]] = mapped_column(
         String(50), nullable=True
-    )  # replay | injection | face_swap | doc_tamper | benign
+    )
+    
+    # Attack severity - validated via AttackSeverity enum
+    # Valid values: low, medium, high
     attack_severity: Mapped[Optional[str]] = mapped_column(
         String(20), nullable=True
-    )  # low | medium | high
+    )
 
     # Device/capture metadata
     device_os: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)

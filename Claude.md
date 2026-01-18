@@ -308,15 +308,23 @@ query = (
 |------|---------|
 | `backend/app/main.py` | FastAPI app entry point |
 | `backend/app/config.py` | Pydantic settings from env |
-| `backend/app/services/processing.py` | Processing backend abstraction |
+| `backend/app/constants.py` | Documented magic numbers with rationale |
+| `backend/app/models/enums.py` | SessionStatus, AttackFamily, Decision enums |
+| `backend/app/services/processing/` | **Processing backend package** (modular) |
+| `backend/app/services/processing/protocol.py` | ProcessingBackend Protocol, dataclasses |
+| `backend/app/services/processing/local.py` | LocalBackend (CPU/dev mode) |
+| `backend/app/services/processing/modal.py` | ModalBackend (GPU/production) |
+| `backend/app/services/processing/helpers.py` | Shared utilities (decode_image, build_reasons) |
 | `backend/app/detection/face_analyzer.py` | InsightFace wrapper |
 | `backend/app/detection/document_analyzer.py` | PaddleOCR wrapper |
 | `backend/app/detection/pad_heuristics.py` | OpenCV-based PAD signals |
-| `backend/app/services/scoring.py` | Risk score computation with configurable profiles |
+| `backend/app/services/scoring.py` | Risk score computation (Decimal precision) |
 | `backend/app/services/reason_codes.py` | Reason code definitions |
 | `backend/app/services/fraud_detection.py` | Velocity rules & geo anomaly detection |
 | `backend/app/services/geolocation.py` | MaxMind GeoIP2 IP-to-country lookup |
+| `backend/app/services/storage.py` | S3/R2 storage with connection pooling |
 | `backend/app/api/security.py` | Auth, rate limiting (in-memory + Redis) |
+| `backend/app/utils/background_tasks.py` | Background task error wrapper |
 | `frontend/app/api/[...path]/route.ts` | Backend proxy |
 | `frontend/lib/api.ts` | API client functions |
 | `frontend/lib/errors.ts` | Error parsing and user-friendly messages |

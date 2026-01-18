@@ -1,6 +1,8 @@
 """Risk scoring and decision logic."""
 
+import math
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_CEILING
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
@@ -180,39 +182,48 @@ def compute_risk_score(
     if config is None:
         config = SCORING_PROFILES[ScoringProfile.DEFAULT]
     
+    # PRECISION: Use Decimal arithmetic for financial-grade accuracy.
+    # Decimal ensures deterministic, reproducible scoring.
+    
+    # Convert inputs to Decimal for precise arithmetic
+    d_face = Decimal(str(face_similarity))
+    d_pad = Decimal(str(pad_score))
+    d_doc = Decimal(str(doc_score))
+    
+    # Convert weights to Decimal
+    w_face = Decimal(str(config.face_weight))
+    w_pad = Decimal(str(config.pad_weight))
+    w_doc = Decimal(str(config.doc_weight))
+    
     # Convert face similarity to risk (invert: low similarity = high risk)
-    face_risk = 1.0 - face_similarity
+    face_risk = Decimal("1.0") - d_face
 
-    # Weighted combination using configurable weights
+    # Weighted combination using Decimal for precision
     raw_score = (
-        config.face_weight * face_risk +
-        config.pad_weight * pad_score +
-        config.doc_weight * doc_score
+        w_face * face_risk +
+        w_pad * d_pad +
+        w_doc * d_doc
     )
 
     # Phase 1: Incorporate explicit liveness score if provided
     if liveness_score is not None:
-        # Liveness score adjustment: lack of liveness increases risk
-        liveness_risk = 1.0 - liveness_score
-        # Blend into PAD portion (20% of PAD weight)
-        liveness_weight = config.pad_weight * 0.20
+        d_liveness = Decimal(str(liveness_score))
+        liveness_risk = Decimal("1.0") - d_liveness
+        liveness_weight = w_pad * Decimal("0.20")
         raw_score += liveness_weight * liveness_risk
 
     # Phase 1: Quality penalty - low quality reduces confidence in match
     if face_quality_score is not None and face_quality_score < 0.5:
-        # Poor quality means face match is less reliable
-        # Add small penalty for low quality
-        quality_penalty = (0.5 - face_quality_score) * 0.1
+        d_quality = Decimal(str(face_quality_score))
+        quality_penalty = (Decimal("0.5") - d_quality) * Decimal("0.1")
         raw_score += quality_penalty
 
     # Scale to 0-100 with ceiling (risk-increasing bias)
-    # SECURITY: Using math.ceil() ensures we NEVER under-report risk.
-    # This is a deliberate policy choice: when uncertain, err on the side of caution.
-    # - 39.01 → 40 (not 39)
-    # - 69.99 → 70 (not 70, but ceil ensures no under-reporting)
-    # This prevents threshold bypass at boundary values.
-    import math
-    risk_score = math.ceil(raw_score * 100)
+    # SECURITY: Ceiling ensures we NEVER under-report risk.
+    # - Decimal("39.01") * 100 → ceiling → 40 (not 39)
+    # - Decimal("69.999") * 100 → ceiling → 70
+    scaled = raw_score * Decimal("100")
+    risk_score = int(scaled.to_integral_value(rounding=ROUND_CEILING))
 
     # Clamp to valid range
     risk_score = max(0, min(100, risk_score))

@@ -163,10 +163,19 @@ def extract_client_ip(request: Request) -> str:
         forwarded_for = request.headers.get("X-Forwarded-For")
         if forwarded_for:
             # X-Forwarded-For: client, proxy1, proxy2, ...
-            # The rightmost non-trusted IP is the actual client
-            # But for simplicity, we take the first (leftmost) IP
-            # since our trusted proxy should be stripping/overwriting untrusted headers
+            # SECURITY: Walk from RIGHT to LEFT to find the first untrusted IP.
+            # This is the actual client IP. Attackers can prepend fake IPs to XFF,
+            # but they can't insert IPs after the trusted proxy chain.
+            #
+            # Example attack: Attacker sends "X-Forwarded-For: spoofed.ip"
+            # After proxy chain: "spoofed.ip, real.client.ip, proxy1, proxy2"
+            # Rightmost untrusted = real.client.ip (correct)
+            # Leftmost = spoofed.ip (WRONG
             ips = [ip.strip() for ip in forwarded_for.split(",")]
+            for ip in reversed(ips):
+                if ip and not _is_trusted_proxy(ip):
+                    return ip
+            # All IPs in chain are trusted proxies - use leftmost as last resort
             if ips and ips[0]:
                 return ips[0]
 
