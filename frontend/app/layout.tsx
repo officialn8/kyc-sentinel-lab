@@ -37,8 +37,8 @@ export default function RootLayout({
             <Sidebar />
             <div className="flex flex-1 flex-col min-h-screen">
               <Navbar />
-              <main className="flex-1 overflow-y-auto gradient-mesh">
-                <div className="container py-4 md:py-6 pb-20 lg:pb-6">{children}</div>
+              <main className="flex-1 overflow-y-auto gradient-mesh relative">
+                <div className="container py-4 md:py-6 pb-20 lg:pb-6 relative z-10">{children}</div>
               </main>
             </div>
           </div>

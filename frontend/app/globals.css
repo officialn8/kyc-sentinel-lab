@@ -113,6 +113,8 @@
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    min-height: 100vh;
+    position: relative;
   }
 
   /* Fluid Typography System */
@@ -352,6 +354,7 @@
   inset: -50%;
   animation: gradient-shift 30s ease-in-out infinite;
   opacity: 0.5;
+  pointer-events: none;
 }
 
 .dark .gradient-mesh::before {
@@ -380,6 +383,7 @@
   inset: -30%;
   animation: gradient-flow 20s ease-in-out infinite reverse;
   opacity: 0.3;
+  pointer-events: none;
 }
 
 .dark .gradient-mesh-animated::after {
@@ -413,6 +417,15 @@
   overflow: hidden;
 }
 
+/* Debug: Ensure all pseudo-elements don't block interactions */
+.gradient-mesh::before,
+.gradient-mesh-animated::after,
+.gradient-danger::before,
+.glass-interactive::before,
+.glass-interactive::after {
+  pointer-events: none !important;
+}
+
 .gradient-danger::before {
   content: '';
   position: absolute;
@@ -422,6 +435,7 @@
     radial-gradient(circle at 20% 80%, hsl(var(--accent) / 0.2) 0%, transparent 50%);
   filter: blur(60px);
   animation: gradient-shift 20s ease-in-out infinite;
+  pointer-events: none;
 }
 
 /* Status colors */

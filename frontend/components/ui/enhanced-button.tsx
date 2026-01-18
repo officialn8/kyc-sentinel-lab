@@ -207,7 +207,10 @@ const EnhancedButton = React.forwardRef<HTMLButtonElement, EnhancedButtonProps>(
     return (
       <motion.div
         className="inline-flex"
-        style={{ x: springX, y: springY }}
+        style={{
+          // Temporarily disable magnetic effect that might be blocking clicks
+          // x: springX, y: springY
+        }}
         whileHover={!disabled ? "hover" : undefined}
         whileTap={!disabled ? "tap" : undefined}
         initial="idle"
