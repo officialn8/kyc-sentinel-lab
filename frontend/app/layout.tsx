@@ -33,11 +33,11 @@ export default function RootLayout({
       <body className={`${inter.className} min-h-screen antialiased`}>
         <Providers>
           <ConnectionStatus />
-          <div className="flex h-screen overflow-hidden">
+          <div className="flex min-h-screen">
             <Sidebar />
-            <div className="flex flex-1 flex-col overflow-hidden">
+            <div className="flex flex-1 flex-col min-h-screen">
               <Navbar />
-              <main className="flex-1 overflow-auto gradient-mesh">
+              <main className="flex-1 overflow-y-auto gradient-mesh">
                 <div className="container py-4 md:py-6 pb-20 lg:pb-6">{children}</div>
               </main>
             </div>

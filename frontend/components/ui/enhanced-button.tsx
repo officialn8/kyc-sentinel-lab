@@ -233,7 +233,7 @@ const EnhancedButton = React.forwardRef<HTMLButtonElement, EnhancedButtonProps>(
         >
           {/* Ripple effects container */}
           {ripple && (
-            <span className="absolute inset-0 overflow-hidden rounded-[inherit]">
+            <span className="absolute inset-0 overflow-hidden rounded-[inherit] pointer-events-none">
               {ripples.map((ripple) => (
                 <motion.span
                   key={ripple.id}
@@ -257,7 +257,7 @@ const EnhancedButton = React.forwardRef<HTMLButtonElement, EnhancedButtonProps>(
 
           {/* Gradient shine effect on hover */}
           <motion.span
-            className="absolute inset-0 rounded-[inherit] opacity-0"
+            className="absolute inset-0 rounded-[inherit] opacity-0 pointer-events-none"
             style={{
               background:
                 "linear-gradient(105deg, transparent 40%, rgba(255, 255, 255, 0.7) 50%, transparent 60%)",
@@ -276,7 +276,7 @@ const EnhancedButton = React.forwardRef<HTMLButtonElement, EnhancedButtonProps>(
 
           {/* Focus ring enhancement */}
           <motion.span
-            className="absolute inset-0 rounded-[inherit] ring-2 ring-primary ring-offset-2 ring-offset-background opacity-0"
+            className="absolute inset-0 rounded-[inherit] ring-2 ring-primary ring-offset-2 ring-offset-background opacity-0 pointer-events-none"
             initial={false}
             whileFocus={{ opacity: 1 }}
             transition={springs.snappy}

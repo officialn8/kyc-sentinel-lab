@@ -86,9 +86,9 @@ export function SessionCard({ session }: SessionCardProps) {
         <Card className="glass-soft shadow-elevation-2 hover:shadow-elevation-4 transition-all duration-300 overflow-hidden group">
           {/* Animated gradient overlay */}
           <motion.div
-            className="absolute inset-0 opacity-0 group-hover:opacity-100"
+            className="absolute inset-0 opacity-0 group-hover:opacity-100 pointer-events-none"
             style={{
-              background: `radial-gradient(circle at ${x.get()}% ${y.get()}%, rgba(var(--primary-rgb), 0.1) 0%, transparent 50%)`,
+              background: `radial-gradient(circle at 50% 50%, rgba(var(--primary-rgb), 0.1) 0%, transparent 50%)`,
             }}
             transition={{ duration: 0.3 }}
           />

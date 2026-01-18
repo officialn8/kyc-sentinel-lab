@@ -103,11 +103,11 @@ export default function DashboardPage() {
         className="relative overflow-hidden rounded-xl border border-border/50 bg-card/30 p-8 md:p-12 glass-strong gradient-mesh-animated shadow-elevation-3"
       >
         {/* Animated gradient danger overlay */}
-        <div className="absolute inset-0 gradient-danger opacity-50" />
+        <div className="absolute inset-0 gradient-danger opacity-50 pointer-events-none" />
 
         {/* Floating security particles */}
         <motion.div
-          className="absolute top-10 right-10 opacity-20"
+          className="absolute top-10 right-10 opacity-20 pointer-events-none"
           animate={{
             y: [-10, 10, -10],
             transition: {
@@ -120,7 +120,7 @@ export default function DashboardPage() {
           <Shield className="h-24 w-24 text-primary" />
         </motion.div>
         <motion.div
-          className="absolute bottom-10 left-10 opacity-10"
+          className="absolute bottom-10 left-10 opacity-10 pointer-events-none"
           animate={{
             y: [-10, 10, -10],
             transition: {
