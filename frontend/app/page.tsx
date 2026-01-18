@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { motion } from "framer-motion";
 import {
   Activity,
   AlertTriangle,
@@ -10,13 +11,16 @@ import {
   Shield,
   TrendingUp,
   Users,
+  Upload,
+  Zap,
 } from "lucide-react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { EnhancedButton } from "@/components/ui/enhanced-button";
 import { SkeletonStatCard } from "@/components/ui/skeleton";
 import { GettingStarted } from "@/components/layout/getting-started";
+import { animations } from "@/lib/animations";
 
 export default function DashboardPage() {
   const { data: metrics, isLoading } = useQuery({
@@ -87,34 +91,82 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="space-y-8">
+    <motion.div
+      initial="initial"
+      animate="animate"
+      variants={animations.pageTransitionVariants}
+      className="space-y-8"
+    >
       {/* Hero Section */}
-      <div className="relative overflow-hidden rounded-2xl border border-border/50 bg-card/50 p-6 md:p-8 glass">
-        <div className="absolute inset-0 bg-gradient-to-r from-primary/10 via-transparent to-transparent" />
-        <div className="relative">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 rounded-lg bg-primary/20">
-              <Shield className="h-6 w-6 text-primary" />
-            </div>
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
+      <motion.div
+        variants={animations.variants.scaleIn}
+        className="relative overflow-hidden rounded-xl border border-border/50 bg-card/30 p-8 md:p-12 glass-strong gradient-mesh-animated shadow-elevation-3"
+      >
+        {/* Animated gradient danger overlay */}
+        <div className="absolute inset-0 gradient-danger opacity-50" />
+
+        {/* Floating security particles */}
+        <motion.div
+          className="absolute top-10 right-10 opacity-20"
+          animate={animations.floatVariants.animate}
+          transition={{ delay: 0, duration: 6 }}
+        >
+          <Shield className="h-24 w-24 text-primary" />
+        </motion.div>
+        <motion.div
+          className="absolute bottom-10 left-10 opacity-10"
+          animate={animations.floatVariants.animate}
+          transition={{ delay: 2, duration: 6 }}
+        >
+          <AlertTriangle className="h-32 w-32 text-accent" />
+        </motion.div>
+
+        <div className="relative z-10">
+          <motion.div
+            className="flex items-center gap-4 mb-6"
+            variants={animations.variants.slideRight}
+          >
+            <motion.div
+              className="p-3 rounded-lg bg-primary/20 backdrop-blur-xl shadow-glow-primary"
+              whileHover={{ scale: 1.1, rotate: 360 }}
+              transition={animations.springs.bouncy}
+            >
+              <Shield className="h-8 w-8 text-primary" />
+            </motion.div>
+            <h1 className="text-3xl md:text-5xl font-bold tracking-tighter">
               KYC Sentinel Lab
             </h1>
-          </div>
-          <p className="text-muted-foreground max-w-2xl mb-6 text-sm md:text-base">
-            Red-team your remote identity verification flow with safe, synthetic
-            attacks and explainable detection. Simulate modern KYC attack
-            patterns and evaluate your detection capabilities.
-          </p>
-          <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
-            <Button asChild>
-              <Link href="/upload">Upload Session</Link>
-            </Button>
-            <Button variant="outline" asChild>
-              <Link href="/simulate">Generate Attacks</Link>
-            </Button>
-          </div>
+          </motion.div>
+
+          <motion.p
+            variants={animations.variants.slideUp}
+            className="text-muted-foreground max-w-3xl mb-8 text-base md:text-lg leading-relaxed"
+          >
+            <span className="text-primary font-semibold">Red-team</span> your remote identity verification flow with{" "}
+            <span className="text-danger font-semibold">synthetic attacks</span> and{" "}
+            <span className="text-accent font-semibold">explainable detection</span>.
+            Simulate modern KYC attack patterns and evaluate your fraud detection capabilities.
+          </motion.p>
+
+          <motion.div
+            variants={animations.variants.slideUp}
+            className="flex flex-col sm:flex-row gap-4"
+          >
+            <EnhancedButton size="lg" glow asChild>
+              <Link href="/upload">
+                <Upload className="mr-2 h-5 w-5" />
+                Upload Session
+              </Link>
+            </EnhancedButton>
+            <EnhancedButton variant="outline" size="lg" asChild>
+              <Link href="/simulate">
+                <Zap className="mr-2 h-5 w-5 text-accent" />
+                Generate Attacks
+              </Link>
+            </EnhancedButton>
+          </motion.div>
         </div>
-      </div>
+      </motion.div>
 
       {/* Getting Started Card - Show when no sessions */}
       {hasNoSessions && (
@@ -122,96 +174,181 @@ export default function DashboardPage() {
       )}
 
       {/* Stats Grid */}
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
+      <motion.div
+        variants={animations.variants.container}
+        className="grid gap-4 grid-cols-2 lg:grid-cols-4"
+      >
         {isLoading ? (
           // Skeleton loading state
           Array.from({ length: 4 }).map((_, i) => (
-            <SkeletonStatCard key={i} />
+            <motion.div
+              key={i}
+              variants={animations.listItemVariants}
+              custom={i}
+            >
+              <SkeletonStatCard />
+            </motion.div>
           ))
         ) : (
-          stats.map((stat) => (
-            <Card key={stat.title} className="glass">
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-xs md:text-sm font-medium text-muted-foreground">
-                  {stat.title}
-                </CardTitle>
-                <stat.icon className={`h-4 w-4 ${stat.color}`} />
-              </CardHeader>
-              <CardContent>
-                <div className="text-xl md:text-2xl font-bold">
-                  {stat.value}
-                </div>
-                <p className="text-xs text-muted-foreground">{stat.description}</p>
-              </CardContent>
-            </Card>
+          stats.map((stat, index) => (
+            <motion.div
+              key={stat.title}
+              variants={animations.listItemVariants}
+              custom={index}
+              whileHover="hover"
+              whileTap="tap"
+            >
+              <Card className="glass-soft shadow-elevation-1 hover:shadow-elevation-3 transition-all duration-300 group">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-xs md:text-sm font-medium text-muted-foreground">
+                    {stat.title}
+                  </CardTitle>
+                  <motion.div
+                    whileHover={{ scale: 1.2, rotate: 15 }}
+                    transition={animations.springs.bouncy}
+                  >
+                    <stat.icon className={`h-4 w-4 ${stat.color} transition-all group-hover:drop-shadow-glow`} />
+                  </motion.div>
+                </CardHeader>
+                <CardContent>
+                  <motion.div
+                    className="text-xl md:text-2xl font-bold"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: index * 0.1 + 0.3 }}
+                  >
+                    {stat.value}
+                  </motion.div>
+                  <p className="text-xs text-muted-foreground">{stat.description}</p>
+                </CardContent>
+              </Card>
+            </motion.div>
           ))
         )}
-      </div>
+      </motion.div>
 
-      {/* Decision Distribution */}
+      {/* Decision Distribution & Quick Actions */}
       <div className="grid gap-4 md:grid-cols-2">
-        <Card className="glass">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Activity className="h-5 w-5 text-primary" />
-              Decision Distribution
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {decisionStats.map((stat) => {
-                const total = metrics?.completed_sessions || 1;
-                const percentage = Math.round((stat.count / total) * 100);
-                return (
-                  <div key={stat.label} className="space-y-2">
-                    <div className="flex items-center justify-between text-sm">
-                      <div className="flex items-center gap-2">
-                        <stat.icon className="h-4 w-4" />
-                        <span>{stat.label}</span>
+        <motion.div
+          variants={animations.variants.slideRight}
+          whileHover={{ scale: 1.01 }}
+          transition={animations.springs.smooth}
+        >
+          <Card className="glass-soft shadow-elevation-2 h-full">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
+                >
+                  <Activity className="h-5 w-5 text-primary" />
+                </motion.div>
+                Decision Distribution
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {decisionStats.map((stat, index) => {
+                  const total = metrics?.completed_sessions || 1;
+                  const percentage = Math.round((stat.count / total) * 100);
+                  return (
+                    <motion.div
+                      key={stat.label}
+                      className="space-y-2"
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: index * 0.1 }}
+                    >
+                      <div className="flex items-center justify-between text-sm">
+                        <div className="flex items-center gap-2">
+                          <motion.div
+                            whileHover={{ scale: 1.2 }}
+                            transition={animations.springs.bouncy}
+                          >
+                            <stat.icon className="h-4 w-4" />
+                          </motion.div>
+                          <span>{stat.label}</span>
+                        </div>
+                        <span className="font-medium">
+                          <motion.span
+                            key={stat.count}
+                            initial={{ opacity: 0, y: -10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={animations.springs.snappy}
+                          >
+                            {stat.count}
+                          </motion.span>{" "}
+                          ({percentage}%)
+                        </span>
                       </div>
-                      <span className="font-medium">
-                        {stat.count} ({percentage}%)
-                      </span>
-                    </div>
-                    <div className="h-2 rounded-full bg-muted overflow-hidden">
-                      <div
-                        className={`h-full ${stat.color} transition-all duration-500`}
-                        style={{ width: `${percentage}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </CardContent>
-        </Card>
+                      <div className="h-3 rounded-full bg-muted/50 overflow-hidden shadow-inner">
+                        <motion.div
+                          className={`h-full ${stat.color} shadow-elevation-1`}
+                          initial={{ width: 0 }}
+                          animate={{ width: `${percentage}%` }}
+                          transition={{
+                            duration: 1,
+                            delay: index * 0.1,
+                            ease: [0.4, 0, 0.2, 1],
+                          }}
+                        />
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
 
-        <Card className="glass">
-          <CardHeader>
-            <CardTitle>Quick Actions</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <Button variant="outline" className="w-full justify-start" asChild>
-              <Link href="/sessions">
-                <Users className="mr-2 h-4 w-4" />
-                View All Sessions
-              </Link>
-            </Button>
-            <Button variant="outline" className="w-full justify-start" asChild>
-              <Link href="/simulate">
-                <Shield className="mr-2 h-4 w-4" />
-                Run Attack Simulation
-              </Link>
-            </Button>
-            <Button variant="outline" className="w-full justify-start" asChild>
-              <Link href="/metrics">
-                <TrendingUp className="mr-2 h-4 w-4" />
-                View Detailed Metrics
-              </Link>
-            </Button>
-          </CardContent>
-        </Card>
+        <motion.div
+          variants={animations.variants.slideLeft}
+          whileHover={{ scale: 1.01 }}
+          transition={animations.springs.smooth}
+        >
+          <Card className="glass-soft shadow-elevation-2 h-full">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Zap className="h-5 w-5 text-accent animate-pulse" />
+                Quick Actions
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <EnhancedButton
+                variant="outline"
+                className="w-full justify-start group"
+                asChild
+              >
+                <Link href="/sessions">
+                  <Users className="mr-2 h-4 w-4 transition-transform group-hover:scale-110" />
+                  View All Sessions
+                </Link>
+              </EnhancedButton>
+              <EnhancedButton
+                variant="outline"
+                className="w-full justify-start group"
+                asChild
+              >
+                <Link href="/simulate">
+                  <Shield className="mr-2 h-4 w-4 transition-transform group-hover:rotate-12" />
+                  Run Attack Simulation
+                </Link>
+              </EnhancedButton>
+              <EnhancedButton
+                variant="outline"
+                className="w-full justify-start group"
+                asChild
+              >
+                <Link href="/metrics">
+                  <TrendingUp className="mr-2 h-4 w-4 transition-transform group-hover:translate-x-1 group-hover:-translate-y-1" />
+                  View Detailed Metrics
+                </Link>
+              </EnhancedButton>
+            </CardContent>
+          </Card>
+        </motion.div>
       </div>
+    </motion.div>
     </div>
   );
 }
