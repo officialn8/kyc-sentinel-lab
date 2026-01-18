@@ -37,19 +37,19 @@ const attackIcons: Record<string, React.ElementType> = {
 };
 
 const attackColors: Record<string, string> = {
-  replay: "border-orange-500/50 hover:border-orange-500",
-  injection: "border-purple-500/50 hover:border-purple-500",
-  face_swap: "border-red-500/50 hover:border-red-500",
-  doc_tamper: "border-yellow-500/50 hover:border-yellow-500",
-  benign: "border-green-500/50 hover:border-green-500",
+  replay: "border-orange-500",
+  injection: "border-purple-500",
+  face_swap: "border-red-500",
+  doc_tamper: "border-yellow-500",
+  benign: "border-green-500",
 };
 
 const attackBg: Record<string, string> = {
-  replay: "bg-orange-500/10",
-  injection: "bg-purple-500/10",
-  face_swap: "bg-red-500/10",
-  doc_tamper: "bg-yellow-500/10",
-  benign: "bg-green-500/10",
+  replay: "bg-orange-500/20 dark:bg-orange-500/10",
+  injection: "bg-purple-500/20 dark:bg-purple-500/10",
+  face_swap: "bg-red-500/20 dark:bg-red-500/10",
+  doc_tamper: "bg-yellow-500/20 dark:bg-yellow-500/10",
+  benign: "bg-green-500/20 dark:bg-green-500/10",
 };
 
 // Generate a temporary ID for optimistic updates
@@ -260,9 +260,16 @@ export default function SimulatePage() {
                     key={family.id}
                     className={cn(
                       "cursor-pointer transition-all glass border-2",
-                      attackColors[family.id],
-                      isSelected && attackBg[family.id],
-                      isSelected && "ring-2 ring-primary",
+                      isSelected ? [
+                        attackColors[family.id],
+                        attackBg[family.id],
+                        "ring-2 ring-offset-2 ring-offset-background",
+                        family.id === "replay" && "ring-orange-500",
+                        family.id === "injection" && "ring-purple-500",
+                        family.id === "face_swap" && "ring-red-500",
+                        family.id === "doc_tamper" && "ring-yellow-500",
+                        family.id === "benign" && "ring-green-500",
+                      ] : "border-border hover:border-primary/50",
                       isGenerating && "pointer-events-none opacity-50"
                     )}
                     onClick={() => !isGenerating && setSelectedFamily(family.id)}
@@ -271,15 +278,38 @@ export default function SimulatePage() {
                       <div className="flex items-start gap-3">
                         <div
                           className={cn(
-                            "p-2 rounded-lg",
-                            attackBg[family.id]
+                            "p-2 rounded-lg transition-all",
+                            isSelected ? [
+                              attackBg[family.id],
+                              "ring-1",
+                              family.id === "replay" && "ring-orange-500/50",
+                              family.id === "injection" && "ring-purple-500/50",
+                              family.id === "face_swap" && "ring-red-500/50",
+                              family.id === "doc_tamper" && "ring-yellow-500/50",
+                              family.id === "benign" && "ring-green-500/50",
+                            ] : "bg-muted/50"
                           )}
                         >
-                          <Icon className="h-5 w-5" />
+                          <Icon className={cn(
+                            "h-5 w-5 transition-colors",
+                            isSelected && [
+                              family.id === "replay" && "text-orange-600 dark:text-orange-400",
+                              family.id === "injection" && "text-purple-600 dark:text-purple-400",
+                              family.id === "face_swap" && "text-red-600 dark:text-red-400",
+                              family.id === "doc_tamper" && "text-yellow-600 dark:text-yellow-400",
+                              family.id === "benign" && "text-green-600 dark:text-green-400",
+                            ]
+                          )} />
                         </div>
-                        <div>
-                          <h3 className="font-medium">{family.name}</h3>
-                          <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                        <div className="flex-1">
+                          <h3 className={cn(
+                            "font-medium transition-colors",
+                            isSelected && "text-foreground"
+                          )}>{family.name}</h3>
+                          <p className={cn(
+                            "text-xs mt-1 line-clamp-2 transition-colors",
+                            isSelected ? "text-muted-foreground" : "text-muted-foreground/70"
+                          )}>
                             {family.description}
                           </p>
                         </div>
