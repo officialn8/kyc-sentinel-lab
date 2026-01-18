@@ -57,14 +57,29 @@ export default function SessionDetailPage() {
   const wsState = useSessionWebSocket(sessionId, {
     enabled: session?.status === "processing",
     onComplete: () => refetch(),
+    onFailed: () => refetch(),
   });
 
-  // Fallback to polling if WebSocket fails
+  // Always poll while processing as a safety net
+  // - Fast polling (2s) when WebSocket is in fallback mode
+  // - Slow polling (5s) otherwise to catch missed updates
+  const isProcessing = session?.status === "processing";
+  const isFallback = wsState.connectionState === "fallback";
+  const isNotConnected = wsState.connectionState !== "connected";
+
   useQuery({
     queryKey: ["session-poll", sessionId],
-    queryFn: () => api.getSession(sessionId),
-    enabled: session?.status === "processing" && wsState.connectionState === "fallback",
-    refetchInterval: 2000,
+    queryFn: async () => {
+      const updated = await api.getSession(sessionId);
+      // If session completed/failed, refetch main query to update UI
+      if (updated.status !== "processing") {
+        refetch();
+      }
+      return updated;
+    },
+    enabled: isProcessing,
+    // Fast polling when WebSocket failed, slower as safety net
+    refetchInterval: isFallback || isNotConnected ? 2000 : 5000,
   });
 
   if (isLoading) {

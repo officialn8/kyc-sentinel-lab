@@ -125,6 +125,7 @@ class ModalBackend:
         from app.services.scoring import compute_risk_score
         from app.services.reason_codes import ReasonCode, REASON_MESSAGES, get_reason_severity
         from app.config import settings as app_settings
+        from app.api.websocket import emit_progress
 
         funcs = self._get_modal_functions()
 
@@ -148,6 +149,9 @@ class ModalBackend:
                 session.status = "processing"
                 await db.commit()
 
+                # Emit processing started event
+                await emit_progress(session_id, "started", message="Processing started")
+
                 # Generate presigned URLs
                 selfie_url = await self.storage.generate_presigned_download_url(
                     session.selfie_asset_key, expiration=300
@@ -169,12 +173,15 @@ class ModalBackend:
                             frame_result.frame_keys[middle_idx], expiration=300
                         )
 
-                # Call Modal functions
+                # Call Modal functions with progress updates
+                await emit_progress(session_id, "progress", step="face_analysis", progress=0.2, message="Analyzing faces...")
                 face_result_raw = funcs["analyze_face"].remote(
                     selfie_url=selfie_url,
                     id_url=id_url,
                     similarity_threshold=0.45,
                 )
+
+                await emit_progress(session_id, "progress", step="document_analysis", progress=0.4, message="Analyzing document...")
                 doc_result_raw = funcs["analyze_document"].remote(id_url=id_url)
 
                 # Build reasons using helper
@@ -198,6 +205,12 @@ class ModalBackend:
                 
                 # PAD analysis for video
                 pad_score = 0.0
+                if session_is_video and frame_result and frame_result.frame_keys:
+                    await emit_progress(session_id, "progress", step="pad_analysis", progress=0.6, message="Running presentation attack detection...")
+                elif not session_is_video:
+                    # Skip PAD for images, move to next step
+                    await emit_progress(session_id, "progress", step="pad_analysis", progress=0.6, message="Skipping PAD (image upload)")
+
                 if session_is_video and frame_result and frame_result.frame_keys:
                     from app.detection.pad_heuristics import get_pad_analyzer
                     
@@ -247,6 +260,8 @@ class ModalBackend:
                             )
 
                 # Scoring
+                await emit_progress(session_id, "progress", step="scoring", progress=0.8, message="Computing risk score...")
+
                 from app.services.scoring import get_scoring_config
                 scoring_config = get_scoring_config(app_settings.scoring_profile)
 
@@ -294,9 +309,32 @@ class ModalBackend:
                 session.status = "completed"
                 await db.commit()
 
+                # Emit completion event
+                await emit_progress(
+                    session_id, "completed", progress=1.0,
+                    message=f"Processing complete. Decision: {decision}"
+                )
+
+                # Dispatch webhooks for session completion
+                from app.services.webhook_service import dispatch_webhooks
+                await dispatch_webhooks("session.completed", {
+                    "session_id": session_id,
+                    "decision": decision,
+                    "risk_score": risk_score,
+                })
+
             except Exception as e:
                 session.status = "failed"
                 await db.commit()
+                # Emit failure event
+                await emit_progress(session_id, "failed", error=str(e))
+
+                # Dispatch webhooks for session failure
+                from app.services.webhook_service import dispatch_webhooks
+                await dispatch_webhooks("session.failed", {
+                    "session_id": session_id,
+                    "error": str(e),
+                })
                 raise
 
     async def generate_synthetic_session(

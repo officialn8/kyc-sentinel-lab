@@ -134,6 +134,10 @@ export function useSessionWebSocket(
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const mountedRef = useRef(true);
 
+  // Use refs to avoid stale closures in WebSocket handlers
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
   // Callbacks refs to avoid stale closures
   const onCompleteRef = useRef(onComplete);
   const onFailedRef = useRef(onFailed);
@@ -237,7 +241,8 @@ export function useSessionWebSocket(
         // Don't reconnect if closed cleanly or completed/failed
         if (event.wasClean) return;
 
-        const currentState = state;
+        // Use ref to get current state (avoids stale closure)
+        const currentState = stateRef.current;
         if (currentState.isComplete || currentState.isFailed) return;
 
         // Attempt reconnection
@@ -270,7 +275,7 @@ export function useSessionWebSocket(
         error: "WebSocket not supported",
       }));
     }
-  }, [enabled, sessionId, state.isComplete, state.isFailed]);
+  }, [enabled, sessionId]); // Removed state dependencies - using stateRef instead
 
   // Connect when enabled
   useEffect(() => {

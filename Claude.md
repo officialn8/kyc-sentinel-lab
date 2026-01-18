@@ -334,6 +334,10 @@ query = (
 | `frontend/app/api/[...path]/route.ts` | Backend proxy |
 | `frontend/lib/api.ts` | API client functions |
 | `frontend/lib/errors.ts` | Error parsing and user-friendly messages |
+| `frontend/lib/types/websocket.ts` | WebSocket event types and state definitions |
+| `frontend/lib/hooks.ts` | Custom hooks including `useSessionWebSocket` |
+| `frontend/components/sessions/live-progress-banner.tsx` | Real-time processing progress UI |
+| `frontend/components/sessions/model-info-card.tsx` | Model versioning display card |
 | `simulator/generator.py` | Synthetic artifact generator |
 | `simulator/base_images.py` | Synthetic selfie/ID document image generation |
 
@@ -350,6 +354,7 @@ query = (
 | `lightbox.tsx` | Full-screen image viewer with zoom/rotate |
 | `error-boundary.tsx` | Error boundary + inline error states |
 | `optimized-image.tsx` | next/image wrapper with blur placeholder, loading states |
+| `tooltip.tsx` | Radix-based accessible tooltip component |
 
 ### Layout Components (`/frontend/components/layout/`)
 | Component | Purpose |
@@ -371,6 +376,8 @@ query = (
 | `session-card.tsx` | Session list item card |
 | `media-preview.tsx` | Image preview with loading states |
 | `reason-code-badge.tsx` | Reason code display badge |
+| `live-progress-banner.tsx` | Real-time WebSocket progress with animated ring and step indicators |
+| `model-info-card.tsx` | Detection model versions and scoring profile display |
 
 ### Metrics Components (`/frontend/components/metrics/`)
 | Component | Purpose |
@@ -630,6 +637,12 @@ alembic downgrade -1
 
 51. ~~**pgvector Extension Check**~~: Added `006_ensure_pgvector.py` migration that verifies pgvector extension availability, creates it if possible, checks face_embedding column exists, and creates appropriate index (IVFFlat for large datasets, HNSW for small). Provides helpful error messages for Railway/Supabase/self-hosted PostgreSQL.
 
+### Phase 5: Frontend Real-Time Features (COMPLETED)
+
+52. ~~**WebSocket Real-Time Progress**~~: Implemented `useSessionWebSocket` hook with auto-reconnect and fallback to polling. Created `LiveProgressBanner` component with animated progress ring, step indicators, and connection status badge ("Live"/"Polling"). Frontend connects to `/ws/sessions/{id}` for live processing updates. Requires `NEXT_PUBLIC_BACKEND_WS_URL` environment variable in Vercel.
+
+53. ~~**Model Versioning Display**~~: Created `ModelInfoCard` component that parses `model_version` string (e.g., `insightface-buffalo_l|paddleocr-en`) into InsightFace and PaddleOCR components. Displays scoring profile with weights and thresholds. Added Radix-based `Tooltip` component for hover details on model versions.
+
 ## Deployment
 
 See `docs/deployment.md` for full details:
@@ -661,6 +674,12 @@ See `docs/deployment.md` for full details:
 | `MAX_UPLOAD_SIZE_BYTES` | Max upload size (default: 50MB) |
 | `GEOIP_DATABASE_PATH` | Path to MaxMind GeoLite2-Country.mmdb (optional) |
 | `REDIS_URL` | Redis URL for distributed rate limiting (optional) |
+
+### Vercel Environment Variables
+| Variable | Purpose |
+|----------|---------|
+| `BACKEND_URL` | Backend API URL (e.g., `https://your-railway-app.railway.app`) |
+| `NEXT_PUBLIC_BACKEND_WS_URL` | WebSocket URL for real-time progress (e.g., `wss://your-railway-app.railway.app`) |
 
 ### Security Checklist for Production Deployment
 
