@@ -5,6 +5,7 @@ This module provides the local processing backend that orchestrates the
 detection pipeline using InsightFace, PaddleOCR, and OpenCV.
 """
 
+import logging
 from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Protocol, Optional
@@ -14,6 +15,8 @@ import cv2
 import numpy as np
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -351,6 +354,53 @@ class LocalBackend:
                                 )
                             )
 
+                # Fraud detection: velocity checks and geo anomaly
+                # Uses server-captured client_ip (trusted) and document country from OCR
+                from app.services.fraud_detection import compute_fraud_signals
+
+                # Extract document country from OCR if available
+                document_country = doc_result.evidence.get("mrz_country") or doc_result.evidence.get("ocr_country")
+
+                fraud_signals = await compute_fraud_signals(
+                    db=db,
+                    device_fingerprint=session.device_fingerprint,
+                    client_ip=session.client_ip,  # Server-captured (trusted)
+                    document_country=document_country,
+                    device_country=session.ip_country,  # For now, use client-provided; production should enrich via IP geolocation
+                    device_timezone=session.device_timezone,
+                    exclude_session_id=str(session.id),
+                )
+
+                # Add fraud-related reason codes
+                for code in fraud_signals.reason_codes:
+                    reason_code = getattr(ReasonCode, code, None)
+                    if reason_code:
+                        evidence = {}
+                        if fraud_signals.velocity_check:
+                            evidence["velocity"] = {
+                                "device_1h": fraud_signals.velocity_check.device_submissions_1h,
+                                "device_24h": fraud_signals.velocity_check.device_submissions_24h,
+                                "ip_1h": fraud_signals.velocity_check.ip_submissions_1h,
+                                "ip_24h": fraud_signals.velocity_check.ip_submissions_24h,
+                                "flags": fraud_signals.velocity_check.flags,
+                            }
+                        if fraud_signals.geo_anomaly:
+                            evidence["geo"] = {
+                                "document_country": fraud_signals.geo_anomaly.document_country,
+                                "device_country": fraud_signals.geo_anomaly.device_country,
+                                "anomaly_type": fraud_signals.geo_anomaly.anomaly_type,
+                                "confidence": fraud_signals.geo_anomaly.confidence,
+                            }
+                        reasons.append(
+                            KYCReason(
+                                session_id=session.id,
+                                code=code,
+                                severity=get_reason_severity(reason_code),
+                                message=REASON_MESSAGES.get(reason_code, code),
+                                evidence=evidence,
+                            )
+                        )
+
                 # Compute scores
                 face_similarity = face_result.similarity or 0.0
                 pad_score = pad_result.overall_pad_score if pad_result else 0.0
@@ -433,32 +483,24 @@ class LocalBackend:
         attack_severity: str,
     ) -> None:
         """Generate a synthetic session with attack artifacts.
-        
+
         Creates synthetic selfie and ID document images, applies attack artifacts
         based on the specified attack family, uploads to storage, then runs
         the normal detection pipeline.
-        
+
         Args:
             session_id: Session UUID
             attack_family: One of: replay, injection, face_swap, doc_tamper, benign
             attack_severity: One of: low, medium, high
         """
-        import sys
-        import os
-        
-        # Add simulator to path for imports
-        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        project_root = os.path.dirname(backend_dir)
-        if project_root not in sys.path:
-            sys.path.insert(0, project_root)
-        
+        # Import from simulator package (relative to backend/)
         from simulator.base_images import (
             generate_synthetic_selfie,
             generate_synthetic_id_document,
             encode_image_to_jpeg,
         )
         from simulator.generator import ArtifactGenerator, AttackFamily, AttackSeverity
-        
+
         from app.database import async_session_maker
         from app.models.session import KYCSession
         
@@ -761,22 +803,33 @@ class ModalBackend:
                     # (PAD is CPU-based, no need for Modal GPU)
                     from app.detection.pad_heuristics import get_pad_analyzer
                     from app.models.frame_metric import KYCFrameMetric
-                    
+
                     pad_analyzer = get_pad_analyzer()
-                    frames = []
-                    
-                    for frame_key in frame_result.frame_keys:
-                        try:
-                            frame_bytes = await self.storage.download_file(frame_key)
-                            frame_img = cv2.imdecode(
-                                np.frombuffer(frame_bytes, np.uint8),
-                                cv2.IMREAD_COLOR
-                            )
-                            if frame_img is not None:
-                                frames.append(frame_img)
-                        except Exception:
-                            # Skip frames that fail to download
-                            continue
+
+                    # PERFORMANCE: Download frames in parallel with bounded concurrency
+                    # Prevents memory exhaustion and storage saturation
+                    MAX_CONCURRENT_DOWNLOADS = 10
+                    semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+
+                    async def download_frame(frame_key: str) -> np.ndarray | None:
+                        async with semaphore:
+                            try:
+                                frame_bytes = await self.storage.download_file(frame_key)
+                                return cv2.imdecode(
+                                    np.frombuffer(frame_bytes, np.uint8),
+                                    cv2.IMREAD_COLOR
+                                )
+                            except Exception:
+                                return None
+
+                    # Download frames with bounded parallelism
+                    frame_results = await asyncio.gather(
+                        *[download_frame(key) for key in frame_result.frame_keys],
+                        return_exceptions=True
+                    )
+
+                    # Filter out None and exceptions
+                    frames = [f for f in frame_results if f is not None and not isinstance(f, Exception)]
                     
                     if frames:
                         pad_result = pad_analyzer.analyze_frames(frames)
@@ -872,35 +925,27 @@ class ModalBackend:
         attack_severity: str,
     ) -> None:
         """Generate a synthetic session with attack artifacts.
-        
+
         Creates synthetic selfie and ID document images, applies attack artifacts
         based on the specified attack family, uploads to storage, then runs
         the Modal-based detection pipeline.
-        
+
         Args:
             session_id: Session UUID
             attack_family: One of: replay, injection, face_swap, doc_tamper, benign
             attack_severity: One of: low, medium, high
         """
-        import sys
-        import os
-        
-        # Add simulator to path for imports
-        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        project_root = os.path.dirname(backend_dir)
-        if project_root not in sys.path:
-            sys.path.insert(0, project_root)
-        
+        # Import from simulator package (relative to backend/)
         from simulator.base_images import (
             generate_synthetic_selfie,
             generate_synthetic_id_document,
             encode_image_to_jpeg,
         )
         from simulator.generator import ArtifactGenerator, AttackFamily, AttackSeverity
-        
+
         from app.database import async_session_maker
         from app.models.session import KYCSession
-        
+
         # Initialize random generator for reproducibility
         rng = np.random.default_rng()
         

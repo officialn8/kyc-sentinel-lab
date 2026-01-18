@@ -355,30 +355,37 @@ async def compute_fraud_signals(
     device_fingerprint: Optional[str] = None,
     client_ip: Optional[str] = None,
     document_country: Optional[str] = None,
+    device_country: Optional[str] = None,
     device_timezone: Optional[str] = None,
     exclude_session_id: Optional[str] = None,
 ) -> FraudSignals:
     """
     Compute all fraud signals for a session.
-    
+
     Aggregates velocity checks and geographic anomaly detection
     into a single fraud assessment.
-    
+
     Args:
         db: Database session
-        device_fingerprint: Unique device identifier
-        client_ip: Client IP address
-        document_country: Country from document
-        device_timezone: Timezone from device
+        device_fingerprint: Unique device identifier (client-provided, untrusted)
+        client_ip: Client IP address (server-captured, trusted)
+        document_country: Country from document MRZ/OCR
+        device_country: Country from IP geolocation (trusted if server-enriched)
+        device_timezone: Timezone from device (client-provided, for cross-validation)
         exclude_session_id: Session ID to exclude from velocity counts
-    
+
+    SECURITY NOTE:
+        - client_ip should be captured server-side, not from client input
+        - device_country should ideally be enriched server-side via IP geolocation
+        - device_fingerprint and device_timezone are client-controlled (untrusted)
+
     Returns:
         FraudSignals with all fraud indicators
     """
     result = FraudSignals()
     fraud_score = 0.0
-    
-    # Check velocity
+
+    # Check velocity using server-captured IP
     velocity = await check_velocity(
         db=db,
         device_fingerprint=device_fingerprint,
@@ -386,28 +393,28 @@ async def compute_fraud_signals(
         exclude_session_id=exclude_session_id,
     )
     result.velocity_check = velocity
-    
+
     if velocity.flagged:
         result.reason_codes.append("FRAUD_HIGH_VELOCITY")
         # Score based on how many limits exceeded
         fraud_score += len(velocity.flags) * 0.2
-    
+
     # Check geographic anomaly
-    # Get device country from IP (would need IP geolocation service)
-    # For now, use ip_country from session if available
-    device_country = None  # Would be populated by IP geolocation
-    
+    # NOTE: For production, device_country should be enriched via IP geolocation service
+    # (e.g., MaxMind GeoIP2, IP2Location) using the server-captured client_ip.
+    # The caller should pass the server-enriched device_country, not client input.
+
     geo = check_geo_anomaly(
         document_country=document_country,
         device_country=device_country,
         device_timezone=device_timezone,
     )
     result.geo_anomaly = geo
-    
+
     if geo.is_anomalous:
         result.reason_codes.append("FRAUD_GEO_MISMATCH")
         fraud_score += geo.confidence * 0.3
-    
+
     result.overall_fraud_score = min(fraud_score, 1.0)
-    
+
     return result

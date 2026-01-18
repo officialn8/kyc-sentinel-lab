@@ -1,6 +1,6 @@
 """Synthetic attack artifact generator."""
 
-from simulator.generator import ArtifactGenerator
+from .generator import ArtifactGenerator
 
 __all__ = ["ArtifactGenerator"]
 

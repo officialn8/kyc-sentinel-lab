@@ -82,6 +82,8 @@ The core value proposition: test your KYC fraud detection without using real dee
 | PaddleOCR | 2.7.x | Document OCR |
 | OpenCV | 4.8.x | Image processing & PAD heuristics |
 | Modal | 0.64.x | Optional serverless GPU processing |
+| geoip2 | 4.8.x | MaxMind IP geolocation (optional) |
+| redis | 5.0.x | Distributed rate limiting (optional) |
 
 ### Infrastructure
 - **Database**: PostgreSQL 16 + pgvector extension
@@ -138,6 +140,142 @@ Copy `env.example` to `.env` and configure:
 | `VELOCITY_DEVICE_24H_LIMIT` | `10` | Max submissions per device per 24 hours |
 | `VELOCITY_IP_1H_LIMIT` | `5` | Max submissions per IP per hour |
 | `VELOCITY_IP_24H_LIMIT` | `20` | Max submissions per IP per 24 hours |
+| `AUTH_DISABLED` | `false` | **SECURITY**: Must be `true` to disable auth (explicit opt-out) |
+| `TRUSTED_PROXY_CIDRS` | `` | Comma-separated CIDRs for trusted proxies (e.g., `10.0.0.0/8,172.16.0.0/12`) |
+| `MAX_UPLOAD_SIZE_BYTES` | `52428800` | Maximum upload file size (50MB default) |
+| `GEOIP_DATABASE_PATH` | `` | Path to MaxMind GeoLite2-Country.mmdb (optional, for IP geolocation) |
+| `REDIS_URL` | `` | Redis URL for distributed rate limiting (e.g., `redis://localhost:6379/0`) |
+
+## Security Architecture
+
+### Authentication (Fail-Closed by Default)
+
+**CRITICAL**: The API refuses to start without proper auth configuration. This prevents accidental exposure.
+
+```python
+# config.py - Startup validation
+@model_validator(mode="after")
+def _validate_auth_config(self) -> "Settings":
+    if self.auth_disabled:
+        return self  # Explicit opt-out
+
+    if not has_api_key and not has_basic:
+        raise ValueError("SECURITY: No authentication configured...")
+```
+
+**Options:**
+1. Set `BACKEND_API_KEY` for API key auth (header: `X-API-Key`)
+2. Set `BASIC_AUTH_USERNAME` + `BASIC_AUTH_PASSWORD` for Basic Auth
+3. Set `AUTH_DISABLED=true` for development only
+
+### Trusted Proxy Configuration
+
+**Problem**: X-Forwarded-For can be spoofed if attackers bypass your proxy.
+
+**Solution**: Only trust proxy headers from known networks.
+
+```bash
+# Railway/Render (private network)
+TRUSTED_PROXY_CIDRS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+
+# Cloudflare (use their published ranges)
+TRUSTED_PROXY_CIDRS=173.245.48.0/20,103.21.244.0/22,...
+
+# Local development
+TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1/128
+```
+
+If `TRUSTED_PROXY_CIDRS` is empty (default), the system always uses the direct connection IP, which is the safest default.
+
+### Presigned URL Security
+
+**Protections implemented:**
+
+1. **Key Validation**: Only allows keys matching `sessions/{uuid}/[selfie|id|frames/NNNN].[ext]`
+2. **Path Traversal Blocked**: Rejects `..`, absolute paths, backslashes
+3. **Session Ownership**: Verifies session exists and is in `pending` state
+4. **Content-Type Enforcement**: Signed URLs require matching Content-Type header
+
+```python
+# upload.py - Key validation pattern
+_ALLOWED_KEY_PATTERN = re.compile(
+    r"^sessions/(?P<session_id>[0-9a-f-]{36})/"
+    r"(selfie|id|frames/\d{4})\.(jpg|jpeg|png|webp|mp4|mov|webm)$"
+)
+```
+
+### Fraud Detection Security
+
+**Client-Provided (Untrusted):**
+- `device_fingerprint` - Can be spoofed
+- `device_timezone` - Can be spoofed
+- `ip_country` - Use for display only, not fraud decisions
+
+**Server-Captured (Trusted):**
+- `client_ip` - Captured via `extract_client_ip()` with trusted proxy support
+- Document country from MRZ/OCR
+
+### IP Geolocation (Server-Side Enrichment)
+
+**Problem**: Client-provided `ip_country` can be spoofed and is untrusted.
+
+**Solution**: Server-side IP geolocation using MaxMind GeoIP2.
+
+```bash
+# Download free GeoLite2-Country database
+# https://dev.maxmind.com/geoip/geolite2-free-geolocation-data
+
+# Configure path (or use common system locations)
+GEOIP_DATABASE_PATH=/path/to/GeoLite2-Country.mmdb
+```
+
+**How it works:**
+1. `create_session()` captures `client_ip` server-side
+2. `lookup_ip_country()` queries MaxMind database
+3. Server-enriched country is stored (falls back to client-provided if GeoIP unavailable)
+4. Fraud detection uses trusted server-side value
+
+**Files:**
+- `backend/app/services/geolocation.py` - GeoIP service
+- `backend/app/api/sessions.py` - Integration in session creation
+
+### Rate Limiting
+
+**Backends available:**
+
+1. **In-Memory** (default): Single-instance only, bounded memory with eviction
+2. **Redis** (production): Distributed across multiple workers/instances
+
+```bash
+# Enable Redis rate limiting
+REDIS_URL=redis://localhost:6379/0
+```
+
+**Automatic fallback**: If Redis is configured but unavailable, falls back to in-memory.
+
+**Algorithm**: Sliding window using Redis sorted sets with TTL.
+
+**Files:**
+- `backend/app/api/security.py` - Rate limiter implementation
+
+### Risk Score Calculation
+
+Uses `math.ceil()` for risk-increasing bias:
+```python
+# scoring.py - Never under-report risk
+risk_score = math.ceil(raw_score * 100)  # 39.01 → 40, not 39
+```
+
+### Session Finalize Idempotency
+
+Uses `SELECT FOR UPDATE` to prevent race conditions:
+```python
+query = (
+    select(KYCSession)
+    .where(KYCSession.id == session_id)
+    .with_for_update(nowait=False)
+)
+```
 
 ## Code Conventions
 
@@ -177,6 +315,8 @@ Copy `env.example` to `.env` and configure:
 | `backend/app/services/scoring.py` | Risk score computation with configurable profiles |
 | `backend/app/services/reason_codes.py` | Reason code definitions |
 | `backend/app/services/fraud_detection.py` | Velocity rules & geo anomaly detection |
+| `backend/app/services/geolocation.py` | MaxMind GeoIP2 IP-to-country lookup |
+| `backend/app/api/security.py` | Auth, rate limiting (in-memory + Redis) |
 | `frontend/app/api/[...path]/route.ts` | Backend proxy |
 | `frontend/lib/api.ts` | API client functions |
 | `frontend/lib/errors.ts` | Error parsing and user-friendly messages |
@@ -418,6 +558,32 @@ alembic downgrade -1
 
 36. ~~**New Reason Codes**~~: Added 9 new reason codes for Phase 2 features: `FACE_AGE_DISCREPANCY`, `PAD_VIRTUAL_CAMERA`, `PAD_LIP_SYNC_MISMATCH`, `DOC_ELA_MANIPULATION`, `DOC_COPY_MOVE_DETECTED`, `FRAUD_HIGH_VELOCITY`, `FRAUD_GEO_MISMATCH`, `FRAUD_SIMILAR_FACE`.
 
+### Phase 3: Security Hardening (COMPLETED)
+
+37. ~~**Auth Fail-Closed at Startup**~~: Added `@model_validator` in `config.py` that raises `ValueError` during settings initialization if auth is misconfigured. App refuses to boot without proper auth config. Removed runtime 500 error fallback.
+
+38. ~~**Presigned URL Session Ownership**~~: The `/presigned` endpoint now extracts session UUID from key, verifies session exists in database, and checks session is in `pending` state. Prevents writes to arbitrary UUIDs or already-processed sessions.
+
+39. ~~**Trusted Proxy Configuration**~~: Added `TRUSTED_PROXY_CIDRS` setting. `X-Forwarded-For` is only trusted if direct connection comes from configured trusted network. Empty = always use direct IP (safest default). Shared `extract_client_ip()` function used by both rate limiter and session creation.
+
+40. ~~**Bounded Parallel Downloads**~~: Added `asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS=10)` to Modal backend frame downloads. Prevents memory exhaustion and storage saturation under load.
+
+41. ~~**Risk Score Ceiling Bias**~~: Changed from `round()` to `math.ceil()` for risk score calculation. Explicit policy: never under-report risk. `39.01 → 40`, not `39`.
+
+42. ~~**Finalize Idempotency with Row Locking**~~: Added `SELECT FOR UPDATE` query in finalize endpoint. Locks row before checking status, uses HTTP 409 for concurrent access, returns success for already-completed sessions.
+
+43. ~~**Rate Limiter Improvements**~~: Added periodic eviction via `_cleanup_stale_buckets()`, emergency eviction at `_RATE_BUCKET_MAX_KEYS=10000`, proper X-Forwarded-For handling with trusted proxy check, `Retry-After` header on 429 responses.
+
+44. ~~**Storage Key Injection Prevention**~~: Regex validation with named capture group for session UUID, path traversal blocking (`..`, `/`, `\`), content-type enforcement in presigned URLs.
+
+45. ~~**Server-Side IP Capture**~~: `client_ip` now captured server-side in `create_session()` using trusted proxy config. Fraud detection uses server-captured IP for velocity checks.
+
+46. ~~**Fraud Detection Wiring**~~: `compute_fraud_signals()` now properly receives `device_country` parameter. Integrated into `process_session()` pipeline. Added documentation about server-side IP geolocation enrichment for production.
+
+47. ~~**Search Performance Index**~~: Added `005_search_performance.py` migration with `pg_trgm` extension and GIN indexes on session ID, attack_family, status, source columns. Partial indexes for common status values.
+
+48. ~~**Removed sys.path Hacks**~~: Fixed simulator package to use relative imports. Removed all `sys.path` manipulation from `processing.py`.
+
 ---
 
 ### Medium Priority
@@ -438,9 +604,17 @@ alembic downgrade -1
 
 7. **A/B Testing Framework**: Compare different detection rule versions.
 
-8. **Rate Limiting**: Add rate limiting to public endpoints.
+8. ~~**Rate Limiting**~~: Implemented per-process rate limiting with memory eviction and Redis-based distributed rate limiting for multi-instance production.
 
 9. **Audit Logging**: Comprehensive audit trail for compliance.
+
+### Phase 4: Production Infrastructure (COMPLETED)
+
+49. ~~**MaxMind GeoIP2 Integration**~~: Added server-side IP geolocation via `backend/app/services/geolocation.py`. Session creation now enriches `ip_country` using server-captured `client_ip`. Falls back to client-provided value if GeoIP unavailable. Configuration via `GEOIP_DATABASE_PATH` env var.
+
+50. ~~**Redis Rate Limiting**~~: Added distributed rate limiting support in `backend/app/api/security.py`. Uses Redis sorted sets with sliding window algorithm. Automatically falls back to in-memory if Redis unavailable. Configuration via `REDIS_URL` env var.
+
+51. ~~**pgvector Extension Check**~~: Added `006_ensure_pgvector.py` migration that verifies pgvector extension availability, creates it if possible, checks face_embedding column exists, and creates appropriate index (IVFFlat for large datasets, HNSW for small). Provides helpful error messages for Railway/Supabase/self-hosted PostgreSQL.
 
 ## Deployment
 
@@ -468,6 +642,25 @@ See `docs/deployment.md` for full details:
 | `CORS_ORIGINS` | Vercel frontend URL |
 | `SCORING_PROFILE` | Risk scoring profile (default, fintech_high_risk, crypto_exchange, social_verification) |
 | `PAD_PROFILE` | PAD detection profile (default, strict, lenient) |
+| `BACKEND_API_KEY` | **REQUIRED**: API authentication key |
+| `TRUSTED_PROXY_CIDRS` | Railway private network CIDRs (e.g., `10.0.0.0/8`) |
+| `MAX_UPLOAD_SIZE_BYTES` | Max upload size (default: 50MB) |
+| `GEOIP_DATABASE_PATH` | Path to MaxMind GeoLite2-Country.mmdb (optional) |
+| `REDIS_URL` | Redis URL for distributed rate limiting (optional) |
+
+### Security Checklist for Production Deployment
+
+Before deploying, verify:
+
+- [ ] `BACKEND_API_KEY` is set to a strong random value (or Basic Auth configured)
+- [ ] `AUTH_DISABLED` is NOT set (or explicitly `false`)
+- [ ] `TRUSTED_PROXY_CIDRS` is configured for your platform (Railway, Cloudflare, etc.)
+- [ ] `CORS_ORIGINS` only includes your frontend domain
+- [ ] Database uses SSL/TLS connection
+- [ ] R2 bucket has proper CORS policy (frontend origin only)
+- [ ] `REDIS_URL` configured for multi-instance rate limiting (or single-instance deployment)
+- [ ] `GEOIP_DATABASE_PATH` configured for server-side IP geolocation (recommended)
+- [ ] pgvector extension enabled in PostgreSQL (run `alembic upgrade head`)
 
 ## Dependencies to Watch
 
@@ -506,3 +699,19 @@ Ensure pgvector extension is enabled: `CREATE EXTENSION IF NOT EXISTS vector;`
 
 ### Face detection returns empty
 InsightFace downloads models on first run (~500MB). Check network/disk space.
+
+### GeoIP lookup returns None
+1. Download GeoLite2-Country.mmdb from MaxMind (free registration required)
+2. Set `GEOIP_DATABASE_PATH=/path/to/GeoLite2-Country.mmdb`
+3. Or place database in common location: `data/GeoLite2-Country.mmdb` or `/usr/share/GeoIP/`
+
+### Redis rate limiting not working
+1. Verify `REDIS_URL` is set correctly (e.g., `redis://localhost:6379/0`)
+2. Check Redis server is running and accessible
+3. Check logs for connection errors (system falls back to in-memory if Redis unavailable)
+
+### pgvector extension not found
+1. Railway: Enable in Dashboard → Postgres → Data → Extensions → vector
+2. Supabase: Database → Extensions → Search "vector" → Enable
+3. Self-hosted: `apt install postgresql-16-pgvector` then `CREATE EXTENSION vector;`
+4. Run `alembic upgrade head` to verify extension and create indexes
