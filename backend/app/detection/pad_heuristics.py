@@ -14,12 +14,115 @@ They provide interpretable reason codes.
 
 import numpy as np
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Optional
 from statistics import mean, stdev
 
 import cv2
 from scipy import fftpack
 from skimage.feature import local_binary_pattern
+
+
+# =============================================================================
+# Configurable PAD Profiles (following ScoringConfig pattern)
+# =============================================================================
+
+class PADProfile(str, Enum):
+    """Available PAD profiles for different use cases."""
+
+    DEFAULT = "default"
+    STRICT = "strict"      # High sensitivity for fintech/crypto
+    LENIENT = "lenient"    # Lower sensitivity for social verification
+
+
+@dataclass
+class PADConfig:
+    """Configurable PAD thresholds.
+
+    Attributes:
+        sharpness_threshold: Laplacian variance threshold for blur detection
+        noise_floor: Minimum expected noise level
+        noise_ceiling: Maximum acceptable noise level
+        motion_entropy_min: Minimum motion entropy for liveness
+        moire_threshold: Threshold for moiré pattern detection
+        color_temp_variance_max: Max acceptable color temperature variance
+        face_boundary_threshold: Threshold for face boundary mismatch
+        ear_blink_threshold: Eye Aspect Ratio below which a blink is detected
+        min_blinks_expected: Minimum blinks expected in video for liveness
+        min_video_frames_for_blink: Minimum frames required to check for blinks
+        lbp_texture_threshold: Score below which texture is suspected printed
+        name: Human-readable profile name
+        description: Profile description
+    """
+
+    sharpness_threshold: float = 100.0
+    noise_floor: float = 5.0
+    noise_ceiling: float = 50.0
+    motion_entropy_min: float = 0.1
+    moire_threshold: float = 0.15
+    color_temp_variance_max: float = 0.2
+    face_boundary_threshold: float = 0.4
+    ear_blink_threshold: float = 0.21
+    min_blinks_expected: int = 1
+    min_video_frames_for_blink: int = 30
+    lbp_texture_threshold: float = 0.4
+    name: str = ""
+    description: str = ""
+
+
+# Predefined PAD profiles for common use cases
+PAD_PROFILES: dict[PADProfile, PADConfig] = {
+    PADProfile.DEFAULT: PADConfig(
+        name="Default",
+        description="Balanced detection for general KYC verification",
+    ),
+    PADProfile.STRICT: PADConfig(
+        sharpness_threshold=120.0,
+        motion_entropy_min=0.15,
+        moire_threshold=0.10,
+        color_temp_variance_max=0.15,
+        face_boundary_threshold=0.35,
+        ear_blink_threshold=0.25,
+        min_blinks_expected=2,
+        lbp_texture_threshold=0.5,
+        name="Strict",
+        description="High sensitivity for fintech/crypto - lower thresholds, requires more blinks",
+    ),
+    PADProfile.LENIENT: PADConfig(
+        sharpness_threshold=80.0,
+        motion_entropy_min=0.05,
+        moire_threshold=0.20,
+        color_temp_variance_max=0.25,
+        face_boundary_threshold=0.5,
+        ear_blink_threshold=0.18,
+        min_blinks_expected=1,
+        lbp_texture_threshold=0.3,
+        name="Lenient",
+        description="Lower sensitivity for social verification - higher thresholds",
+    ),
+}
+
+
+def get_pad_config(profile: PADProfile | str | None = None) -> PADConfig:
+    """Get PAD configuration for a profile.
+
+    Args:
+        profile: Profile enum, string name, or None for default
+
+    Returns:
+        PADConfig for the requested profile
+    """
+    if profile is None:
+        return PAD_PROFILES[PADProfile.DEFAULT]
+
+    if isinstance(profile, str):
+        try:
+            profile = PADProfile(profile)
+        except ValueError:
+            # Unknown profile, use default
+            return PAD_PROFILES[PADProfile.DEFAULT]
+
+    return PAD_PROFILES.get(profile, PAD_PROFILES[PADProfile.DEFAULT])
 
 
 @dataclass
@@ -174,7 +277,7 @@ class PADResult:
 
 class PADAnalyzer:
     """Presentation Attack Detection analyzer using OpenCV heuristics.
-    
+
     Implements detection of:
     - Replay attacks via moiré pattern detection in FFT domain
     - Injection attacks via unnatural sharpness boundaries
@@ -186,47 +289,57 @@ class PADAnalyzer:
 
     def __init__(
         self,
-        sharpness_threshold: float = 100.0,
-        noise_floor: float = 5.0,
-        noise_ceiling: float = 50.0,
-        motion_entropy_min: float = 0.1,
-        moire_threshold: float = 0.15,
-        color_temp_variance_max: float = 0.2,
-        face_boundary_threshold: float = 0.4,
-        # Liveness detection thresholds
-        ear_blink_threshold: float = 0.21,
-        min_blinks_expected: int = 1,
-        min_video_frames_for_blink: int = 30,
-        lbp_texture_threshold: float = 0.4,
+        config: Optional[PADConfig] = None,
+        # Legacy parameters for backward compatibility
+        sharpness_threshold: Optional[float] = None,
+        noise_floor: Optional[float] = None,
+        noise_ceiling: Optional[float] = None,
+        motion_entropy_min: Optional[float] = None,
+        moire_threshold: Optional[float] = None,
+        color_temp_variance_max: Optional[float] = None,
+        face_boundary_threshold: Optional[float] = None,
+        ear_blink_threshold: Optional[float] = None,
+        min_blinks_expected: Optional[int] = None,
+        min_video_frames_for_blink: Optional[int] = None,
+        lbp_texture_threshold: Optional[float] = None,
     ) -> None:
         """
         Initialize PAD analyzer with configurable thresholds.
-        
+
         Args:
-            sharpness_threshold: Laplacian variance threshold
-            noise_floor: Minimum expected noise level
-            noise_ceiling: Maximum acceptable noise level
-            motion_entropy_min: Minimum motion entropy for liveness
-            moire_threshold: Threshold for moiré pattern detection
-            color_temp_variance_max: Max acceptable color temp variance
-            face_boundary_threshold: Threshold for face boundary mismatch detection
-            ear_blink_threshold: Eye Aspect Ratio below which a blink is detected
-            min_blinks_expected: Minimum blinks expected in a video (for liveness)
-            min_video_frames_for_blink: Minimum frames required to check for blinks
-            lbp_texture_threshold: Score below which texture is suspected printed
+            config: PADConfig object with all thresholds. If provided, takes precedence.
+            sharpness_threshold: Laplacian variance threshold (legacy, use config)
+            noise_floor: Minimum expected noise level (legacy, use config)
+            noise_ceiling: Maximum acceptable noise level (legacy, use config)
+            motion_entropy_min: Minimum motion entropy for liveness (legacy, use config)
+            moire_threshold: Threshold for moiré pattern detection (legacy, use config)
+            color_temp_variance_max: Max acceptable color temp variance (legacy, use config)
+            face_boundary_threshold: Threshold for face boundary mismatch (legacy, use config)
+            ear_blink_threshold: EAR below which a blink is detected (legacy, use config)
+            min_blinks_expected: Minimum blinks expected in video (legacy, use config)
+            min_video_frames_for_blink: Minimum frames for blink check (legacy, use config)
+            lbp_texture_threshold: Score below which texture is printed (legacy, use config)
         """
-        self.sharpness_threshold = sharpness_threshold
-        self.noise_floor = noise_floor
-        self.noise_ceiling = noise_ceiling
-        self.motion_entropy_min = motion_entropy_min
-        self.moire_threshold = moire_threshold
-        self.color_temp_variance_max = color_temp_variance_max
-        self.face_boundary_threshold = face_boundary_threshold
-        self.ear_blink_threshold = ear_blink_threshold
-        self.min_blinks_expected = min_blinks_expected
-        self.min_video_frames_for_blink = min_video_frames_for_blink
-        self.lbp_texture_threshold = lbp_texture_threshold
-        
+        # Use provided config or create default
+        if config is None:
+            config = get_pad_config()
+
+        # Apply config values, allowing legacy params to override
+        self.sharpness_threshold = sharpness_threshold if sharpness_threshold is not None else config.sharpness_threshold
+        self.noise_floor = noise_floor if noise_floor is not None else config.noise_floor
+        self.noise_ceiling = noise_ceiling if noise_ceiling is not None else config.noise_ceiling
+        self.motion_entropy_min = motion_entropy_min if motion_entropy_min is not None else config.motion_entropy_min
+        self.moire_threshold = moire_threshold if moire_threshold is not None else config.moire_threshold
+        self.color_temp_variance_max = color_temp_variance_max if color_temp_variance_max is not None else config.color_temp_variance_max
+        self.face_boundary_threshold = face_boundary_threshold if face_boundary_threshold is not None else config.face_boundary_threshold
+        self.ear_blink_threshold = ear_blink_threshold if ear_blink_threshold is not None else config.ear_blink_threshold
+        self.min_blinks_expected = min_blinks_expected if min_blinks_expected is not None else config.min_blinks_expected
+        self.min_video_frames_for_blink = min_video_frames_for_blink if min_video_frames_for_blink is not None else config.min_video_frames_for_blink
+        self.lbp_texture_threshold = lbp_texture_threshold if lbp_texture_threshold is not None else config.lbp_texture_threshold
+
+        # Store config reference for debugging
+        self._config = config
+
         # Lazy-load face detector for landmark extraction
         self._face_detector = None
         self._landmark_predictor = None
@@ -1437,9 +1550,24 @@ class PADAnalyzer:
 _pad_analyzer: Optional[PADAnalyzer] = None
 
 
-def get_pad_analyzer() -> PADAnalyzer:
-    """Get cached PAD analyzer instance."""
+def get_pad_analyzer(config: Optional[PADConfig] = None) -> PADAnalyzer:
+    """Get PAD analyzer instance.
+
+    Args:
+        config: Optional PADConfig. If provided, returns a new (non-cached) analyzer
+                with this config. If None, returns cached singleton using settings.
+
+    Returns:
+        PADAnalyzer instance
+    """
     global _pad_analyzer
+
+    # If custom config provided, return non-cached instance
+    if config is not None:
+        return PADAnalyzer(config=config)
+
+    # Otherwise use cached singleton with settings-based config
     if _pad_analyzer is None:
-        _pad_analyzer = PADAnalyzer()
+        from app.config import settings
+        _pad_analyzer = PADAnalyzer(config=get_pad_config(settings.pad_profile))
     return _pad_analyzer

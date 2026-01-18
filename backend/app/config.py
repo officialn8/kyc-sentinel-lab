@@ -43,9 +43,18 @@ class Settings(BaseSettings):
     use_modal: bool = False
     modal_environment: str = "dev"  # dev | prod
 
+    # Worker configuration
+    # Set to true in production to use durable job queue (requires separate worker service)
+    # Set to false in development for direct background processing
+    use_worker: bool = False
+
     # Scoring configuration
     # Available profiles: default, fintech_high_risk, crypto_exchange, social_verification
     scoring_profile: str = "default"
+
+    # PAD (Presentation Attack Detection) configuration
+    # Available profiles: default, strict, lenient
+    pad_profile: str = "default"
     
     # Velocity rule thresholds for fraud detection
     velocity_device_1h_limit: int = 3  # Max submissions per device per hour

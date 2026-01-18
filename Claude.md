@@ -129,9 +129,11 @@ Copy `env.example` to `.env` and configure:
 | `R2_SECRET_KEY` | `minioadmin` | Storage secret key |
 | `R2_BUCKET` | `kyc-sentinel-media` | Bucket name |
 | `USE_MODAL` | `false` | Enable Modal GPU backend |
+| `USE_WORKER` | `false` | Enable durable job queue (requires separate worker service) |
 | `CORS_ORIGINS` | `["http://localhost:3000"]` | Allowed CORS origins |
 | `BACKEND_API_KEY` | `` | Optional API auth key |
 | `SCORING_PROFILE` | `default` | Scoring profile (default, fintech_high_risk, crypto_exchange, social_verification) |
+| `PAD_PROFILE` | `default` | PAD profile (default, strict, lenient) |
 | `VELOCITY_DEVICE_1H_LIMIT` | `3` | Max submissions per device per hour |
 | `VELOCITY_DEVICE_24H_LIMIT` | `10` | Max submissions per device per 24 hours |
 | `VELOCITY_IP_1H_LIMIT` | `5` | Max submissions per IP per hour |
@@ -460,9 +462,12 @@ See `docs/deployment.md` for full details:
 | `R2_SECRET_KEY` | R2 secret key |
 | `R2_BUCKET` | R2 bucket name |
 | `USE_MODAL` | Set to `true` for GPU processing |
+| `USE_WORKER` | Set to `true` for durable job queue processing |
 | `MODAL_TOKEN_ID` | Modal API token ID |
 | `MODAL_TOKEN_SECRET` | Modal API token secret |
 | `CORS_ORIGINS` | Vercel frontend URL |
+| `SCORING_PROFILE` | Risk scoring profile (default, fintech_high_risk, crypto_exchange, social_verification) |
+| `PAD_PROFILE` | PAD detection profile (default, strict, lenient) |
 
 ## Dependencies to Watch
 
