@@ -9,7 +9,6 @@ import {
   Clock,
   FileText,
   Info,
-  Loader2,
   Scan,
   User,
   ZoomIn,
@@ -18,17 +17,19 @@ import Link from "next/link";
 import { AspectImage } from "@/components/ui/optimized-image";
 import { api, Reason } from "@/lib/api";
 import { formatDate, getRiskColor, formatPercentage, cn } from "@/lib/utils";
+import { useSessionWebSocket } from "@/lib/hooks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LightboxTrigger } from "@/components/ui/lightbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { InlineError } from "@/components/ui/error-boundary";
 import { EvidenceViewer } from "@/components/sessions/evidence-viewer";
 import { FaceComparison } from "@/components/sessions/face-comparison";
-import { ProcessingTimeline, ProcessingTimelineCompact } from "@/components/sessions/processing-timeline";
+import { ProcessingTimeline } from "@/components/sessions/processing-timeline";
+import { LiveProgressBanner } from "@/components/sessions/live-progress-banner";
+import { ModelInfoCard } from "@/components/sessions/model-info-card";
 
 const severityIcons = {
   info: Info,
@@ -50,11 +51,20 @@ export default function SessionDetailPage() {
     queryKey: ["session", sessionId],
     queryFn: () => api.getSession(sessionId),
     enabled: !!sessionId,
-    // Poll every 2 seconds while processing
-    refetchInterval: (query) => {
-      const data = query.state.data;
-      return data?.status === "processing" ? 2000 : false;
-    },
+  });
+
+  // WebSocket for real-time progress updates
+  const wsState = useSessionWebSocket(sessionId, {
+    enabled: session?.status === "processing",
+    onComplete: () => refetch(),
+  });
+
+  // Fallback to polling if WebSocket fails
+  useQuery({
+    queryKey: ["session-poll", sessionId],
+    queryFn: () => api.getSession(sessionId),
+    enabled: session?.status === "processing" && wsState.connectionState === "fallback",
+    refetchInterval: 2000,
   });
 
   if (isLoading) {
@@ -135,22 +145,14 @@ export default function SessionDetailPage() {
         </div>
       </div>
 
-      {/* Processing Banner with Timeline */}
+      {/* Live Processing Banner */}
       {session.status === "processing" && (
-        <Card className="glass border-l-4 border-l-primary bg-primary/5">
-          <CardContent className="py-4">
-            <div className="flex items-center gap-4 mb-4">
-              <Loader2 className="h-6 w-6 animate-spin text-primary" />
-              <div>
-                <p className="font-semibold text-primary">Processing</p>
-                <p className="text-sm text-muted-foreground">
-                  Running face matching, document analysis, and PAD checks...
-                </p>
-              </div>
-            </div>
-            <ProcessingTimelineCompact status={session.status} />
-          </CardContent>
-        </Card>
+        <LiveProgressBanner
+          progress={wsState.progress}
+          currentStep={wsState.currentStep}
+          message={wsState.message}
+          connectionState={wsState.connectionState}
+        />
       )}
 
       {/* Failed Banner */}
@@ -183,16 +185,6 @@ export default function SessionDetailPage() {
                 <p className="text-sm text-muted-foreground">
                   Risk Score: {result.risk_score}/100
                 </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-6">
-              <div className="text-right">
-                <p className="text-xs text-muted-foreground">Model</p>
-                <p className="text-sm font-mono">{result.model_version}</p>
-              </div>
-              <div className="text-right">
-                <p className="text-xs text-muted-foreground">Rules</p>
-                <p className="text-sm font-mono">{result.rules_version}</p>
               </div>
             </div>
           </CardContent>
@@ -411,6 +403,14 @@ export default function SessionDetailPage() {
                 </div>
               </CardContent>
             </Card>
+          )}
+
+          {/* Detection Models */}
+          {result && (
+            <ModelInfoCard
+              modelVersion={result.model_version}
+              rulesVersion={result.rules_version}
+            />
           )}
 
           {/* Metadata */}
