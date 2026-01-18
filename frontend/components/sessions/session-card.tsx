@@ -19,7 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { animations } from "@/lib/animations";
 
 interface SessionCardProps {
-  session: Session;
+  session: Session & { result?: { risk_score?: number; decision?: string } };
 }
 
 const statusConfig = {

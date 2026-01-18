@@ -178,6 +178,32 @@ const EnhancedButton = React.forwardRef<HTMLButtonElement, EnhancedButtonProps>(
       [ripple, haptic, soundEffect, disabled, onClick]
     );
 
+    // When using asChild, we can't wrap with motion.div as it breaks Slot
+    if (asChild) {
+      return (
+        <Comp
+          ref={(node: HTMLButtonElement | null) => {
+            (buttonRef as React.MutableRefObject<HTMLButtonElement | null>).current = node;
+            if (ref) {
+              if (typeof ref === "function") {
+                ref(node);
+              } else {
+                (ref as React.MutableRefObject<HTMLButtonElement | null>).current = node;
+              }
+            }
+          }}
+          className={cn(buttonVariants({ variant, size, glow, className }))}
+          disabled={disabled}
+          onClick={handleClick}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={handleMouseLeave}
+          {...props}
+        >
+          {children}
+        </Comp>
+      );
+    }
+
     return (
       <motion.div
         className="inline-flex"
@@ -188,19 +214,16 @@ const EnhancedButton = React.forwardRef<HTMLButtonElement, EnhancedButtonProps>(
         variants={motionButtonVariants}
       >
         <Comp
-          ref={React.useMemo(
-            () => (node: HTMLButtonElement) => {
-              buttonRef.current = node;
-              if (ref) {
-                if (typeof ref === "function") {
-                  ref(node);
-                } else {
-                  ref.current = node;
-                }
+          ref={(node: HTMLButtonElement | null) => {
+            (buttonRef as React.MutableRefObject<HTMLButtonElement | null>).current = node;
+            if (ref) {
+              if (typeof ref === "function") {
+                ref(node);
+              } else {
+                (ref as React.MutableRefObject<HTMLButtonElement | null>).current = node;
               }
-            },
-            [ref]
-          )}
+            }
+          }}
           className={cn(buttonVariants({ variant, size, glow, className }))}
           disabled={disabled}
           onClick={handleClick}

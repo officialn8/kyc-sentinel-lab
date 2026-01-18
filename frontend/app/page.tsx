@@ -108,15 +108,28 @@ export default function DashboardPage() {
         {/* Floating security particles */}
         <motion.div
           className="absolute top-10 right-10 opacity-20"
-          animate={animations.floatVariants.animate}
-          transition={{ delay: 0, duration: 6 }}
+          animate={{
+            y: [-10, 10, -10],
+            transition: {
+              duration: 6,
+              ease: "easeInOut",
+              repeat: Infinity,
+            },
+          }}
         >
           <Shield className="h-24 w-24 text-primary" />
         </motion.div>
         <motion.div
           className="absolute bottom-10 left-10 opacity-10"
-          animate={animations.floatVariants.animate}
-          transition={{ delay: 2, duration: 6 }}
+          animate={{
+            y: [-10, 10, -10],
+            transition: {
+              duration: 6,
+              ease: "easeInOut",
+              repeat: Infinity,
+              delay: 2,
+            },
+          }}
         >
           <AlertTriangle className="h-32 w-32 text-accent" />
         </motion.div>
