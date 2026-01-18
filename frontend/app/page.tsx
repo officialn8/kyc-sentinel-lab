@@ -349,7 +349,6 @@ export default function DashboardPage() {
         </motion.div>
       </div>
     </motion.div>
-    </div>
   );
 }
 
