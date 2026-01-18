@@ -197,6 +197,11 @@ class DocumentAnalyzer:
         self._ocr = None
         self._ocr_instances: dict[str, any] = {}  # Cache OCR instances per language
 
+    @property
+    def version(self) -> str:
+        """Return model version string for reproducibility tracking."""
+        return f"paddleocr-{self.lang}"
+
     def _ensure_model(self, lang: Optional[str] = None) -> None:
         """Ensure PaddleOCR is loaded for the specified language.
         

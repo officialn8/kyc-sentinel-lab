@@ -23,11 +23,13 @@ The core value proposition: test your KYC fraud detection without using real dee
 │  Dashboard  │  Sessions  │  Upload  │  Simulate  │  Metrics    │
 └──────────────────────────┬──────────────────────────────────────┘
                            │ HTTP/REST (proxied via /api/*)
+                           │ WebSocket at /ws/sessions/{id}
 ┌──────────────────────────▼──────────────────────────────────────┐
 │                         Backend                                  │
 │                        (FastAPI)                                 │
 ├─────────────────────────────────────────────────────────────────┤
 │  API Layer  │  Services  │  Detection  │  Processing Backend    │
+│             │  Webhooks  │             │  (emits WS progress)   │
 └──────┬─────────────┬─────────────┬──────────────────────────────┘
        │             │             │
 ┌──────▼─────┐ ┌─────▼─────┐ ┌─────▼─────────────────────────────┐
@@ -324,6 +326,10 @@ query = (
 | `backend/app/services/geolocation.py` | MaxMind GeoIP2 IP-to-country lookup |
 | `backend/app/services/storage.py` | S3/R2 storage with connection pooling |
 | `backend/app/api/security.py` | Auth, rate limiting (in-memory + Redis) |
+| `backend/app/api/websocket.py` | WebSocket endpoint for real-time session progress |
+| `backend/app/api/webhooks.py` | Webhook CRUD API endpoints |
+| `backend/app/services/webhook_service.py` | Webhook dispatch with retry logic |
+| `backend/app/models/webhook.py` | Webhook SQLAlchemy model |
 | `backend/app/utils/background_tasks.py` | Background task error wrapper |
 | `frontend/app/api/[...path]/route.ts` | Backend proxy |
 | `frontend/lib/api.ts` | API client functions |
@@ -600,13 +606,13 @@ alembic downgrade -1
 
 2. **Batch Processing**: Add batch upload and simulation endpoints for bulk testing.
 
-3. **Webhook Notifications**: Add webhook support for processing completion events.
+3. ~~**Webhook Notifications**~~: Added webhook support for processing completion events. CRUD API at `/api/webhooks`, dispatch service with 3 retries + exponential backoff (1s, 2s, 4s). Auto-disables after 10 consecutive failures. Events: `session.completed`, `session.failed`. Files: `backend/app/api/webhooks.py`, `backend/app/services/webhook_service.py`, `backend/app/models/webhook.py`, `backend/alembic/versions/008_webhooks.py`.
 
-4. **Model Versioning**: Track which ML model versions produced each result for reproducibility.
+4. ~~**Model Versioning**~~: Added `version` property to `FaceAnalyzer` (returns `insightface-{model_pack}`) and `DocumentAnalyzer` (returns `paddleocr-{lang}`). Processing pipeline populates `model_version` and `rules_version` fields in `KYCResult` for reproducibility tracking.
 
 ### Low Priority / Nice to Have
 
-5. **Real-time Processing Progress**: WebSocket updates for processing status.
+5. ~~**Real-time Processing Progress**~~: Added WebSocket endpoint at `/ws/sessions/{session_id}` for real-time processing updates. Events: `started`, `progress`, `completed`, `failed`. Progress events include step name (face_analysis, document_analysis, pad_analysis, scoring) and percentage. Connection manager in `backend/app/api/websocket.py`. Note: Single-instance implementation; use Redis pub/sub for multi-instance deployments.
 
 6. **Export/Import Sessions**: CSV/JSON export of session data for external analysis.
 

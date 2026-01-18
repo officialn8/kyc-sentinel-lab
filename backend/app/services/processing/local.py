@@ -140,6 +140,7 @@ class LocalBackend:
         from app.services.scoring import compute_risk_score
         from app.services.reason_codes import ReasonCode, REASON_MESSAGES, get_reason_severity
         from app.config import settings as app_settings
+        from app.api.websocket import emit_progress
 
         async with async_session_maker() as db:
             session = await db.get(KYCSession, session_id)
@@ -160,6 +161,9 @@ class LocalBackend:
 
                 session.status = "processing"
                 await db.commit()
+
+                # Emit processing started event
+                await emit_progress(session_id, "started", message="Processing started")
 
                 # SECURITY: Validate file sizes before downloading
                 max_size = app_settings.max_upload_size_bytes
@@ -189,12 +193,16 @@ class LocalBackend:
                     if frames:
                         selfie_img = frames[len(frames) // 2]
 
-                # Run detection modules
+                # Run detection modules with progress updates
+                await emit_progress(session_id, "progress", step="face_analysis", progress=0.2, message="Analyzing faces...")
                 face_result = self.face_analyzer.analyze(selfie_img, id_img)
+
+                await emit_progress(session_id, "progress", step="document_analysis", progress=0.4, message="Analyzing document...")
                 doc_result = self.doc_analyzer.analyze(id_img)
 
                 pad_result = None
                 if frames:
+                    await emit_progress(session_id, "progress", step="pad_analysis", progress=0.6, message="Running presentation attack detection...")
                     pad_result = self.pad_analyzer.analyze_frames(frames)
 
                 # Build reason codes using helper
@@ -267,7 +275,8 @@ class LocalBackend:
                             )
                         )
 
-                # Compute scores
+                # Compute scores with progress update
+                await emit_progress(session_id, "progress", step="scoring", progress=0.8, message="Computing risk score...")
                 face_similarity = face_result.similarity or 0.0
                 pad_score = pad_result.overall_pad_score if pad_result else 0.0
                 doc_score = doc_result.doc_score
@@ -283,7 +292,7 @@ class LocalBackend:
                     config=scoring_config,
                 )
 
-                # Save result
+                # Save result with version tracking
                 result = KYCResult(
                     session_id=session.id,
                     risk_score=risk_score,
@@ -291,6 +300,8 @@ class LocalBackend:
                     face_similarity=face_similarity,
                     pad_score=pad_score,
                     doc_score=doc_score,
+                    model_version=f"{self.face_analyzer.version},{self.doc_analyzer.version}",
+                    rules_version=app_settings.scoring_profile,
                 )
                 db.add(result)
 
@@ -334,9 +345,32 @@ class LocalBackend:
                 session.status = "completed"
                 await db.commit()
 
+                # Emit completion event
+                await emit_progress(
+                    session_id, "completed", progress=1.0,
+                    message=f"Processing complete. Decision: {decision}"
+                )
+                
+                # Dispatch webhooks for session completion
+                from app.services.webhook_service import dispatch_webhooks
+                await dispatch_webhooks("session.completed", {
+                    "session_id": session_id,
+                    "decision": decision,
+                    "risk_score": risk_score,
+                })
+
             except Exception as e:
                 session.status = "failed"
                 await db.commit()
+                # Emit failure event
+                await emit_progress(session_id, "failed", error=str(e))
+                
+                # Dispatch webhooks for session failure
+                from app.services.webhook_service import dispatch_webhooks
+                await dispatch_webhooks("session.failed", {
+                    "session_id": session_id,
+                    "error": str(e),
+                })
                 raise
 
     async def generate_synthetic_session(

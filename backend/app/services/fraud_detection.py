@@ -105,7 +105,6 @@ async def check_velocity(
     if thresholds is None:
         thresholds = VelocityThresholds.from_settings()
     
-    # Use timezone-aware datetime for Python 3.12+ compatibility
     from datetime import timezone
     now = datetime.now(timezone.utc)
     one_hour_ago = now - timedelta(hours=1)

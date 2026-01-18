@@ -144,6 +144,11 @@ class FaceAnalyzer:
         self.max_threshold = max_threshold
         self._app = None
 
+    @property
+    def version(self) -> str:
+        """Return model version string for reproducibility tracking."""
+        return f"insightface-{self.model_pack}"
+
     def _ensure_model(self) -> None:
         """Ensure the InsightFace model is loaded (lazy initialization)."""
         if self._app is None:

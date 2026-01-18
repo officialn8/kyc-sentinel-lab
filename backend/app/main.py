@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.api import sessions, upload, simulate, metrics
+from app.api import sessions, upload, simulate, metrics, websocket, webhooks
 from app.api.security import require_auth
 
 
@@ -62,8 +62,10 @@ app.include_router(
     metrics.router, prefix="/api/metrics", tags=["metrics"], dependencies=api_auth
 )
 
+# WebSocket router (no auth - handled at connection level if needed)
+app.include_router(websocket.router, tags=["websocket"])
 
-
-
-
-
+# Webhooks management API
+app.include_router(
+    webhooks.router, prefix="/api/webhooks", tags=["webhooks"], dependencies=api_auth
+)
