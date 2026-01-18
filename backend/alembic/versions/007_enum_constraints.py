@@ -1,7 +1,7 @@
 """Add CHECK constraints for enum validation.
 
 Revision ID: 007_enum_constraints
-Revises: 006_ensure_pgvector
+Revises: 006_pgvector_check
 Create Date: 2026-01-18
 
 Adds database-level CHECK constraints to enforce valid enum values:
@@ -16,7 +16,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "007_enum_constraints"
-down_revision = "006_ensure_pgvector"
+down_revision = "006_pgvector_check"  # Note: matches revision ID in 006_ensure_pgvector.py
 branch_labels = None
 depends_on = None
 
