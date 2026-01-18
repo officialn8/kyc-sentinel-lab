@@ -36,6 +36,12 @@ paddleocr>=2.7.0
 python-dateutil==2.8.2
 httpx==0.26.0
 
+# IP Geolocation (optional, for fraud detection)
+geoip2>=4.8.0
+
+# Redis (optional, for distributed rate limiting)
+redis>=5.0.0
+
 # Modal serverless GPU (optional, for production)
 modal>=0.64.0
 

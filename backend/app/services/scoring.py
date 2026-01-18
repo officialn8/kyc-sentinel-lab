@@ -205,8 +205,14 @@ def compute_risk_score(
         quality_penalty = (0.5 - face_quality_score) * 0.1
         raw_score += quality_penalty
 
-    # Scale to 0-100
-    risk_score = int(raw_score * 100)
+    # Scale to 0-100 with ceiling (risk-increasing bias)
+    # SECURITY: Using math.ceil() ensures we NEVER under-report risk.
+    # This is a deliberate policy choice: when uncertain, err on the side of caution.
+    # - 39.01 → 40 (not 39)
+    # - 69.99 → 70 (not 70, but ceil ensures no under-reporting)
+    # This prevents threshold bypass at boundary values.
+    import math
+    risk_score = math.ceil(raw_score * 100)
 
     # Clamp to valid range
     risk_score = max(0, min(100, risk_score))

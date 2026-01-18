@@ -4,13 +4,14 @@ import os
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from sqlalchemy import select, func, or_, cast, String
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import DbSession, Storage
-from app.api.security import rate_limiter
+from app.api.security import rate_limiter, extract_client_ip
 from app.models.session import KYCSession
+from app.services.geolocation import lookup_ip_country
 from app.models.result import KYCResult
 from app.services.job_queue import enqueue_process_session
 from app.services.processing import get_processing_backend
@@ -26,6 +27,7 @@ from app.schemas.session import (
 )
 
 router = APIRouter()
+
 
 _SELFIE_EXT_ALLOWLIST = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".webm"}
 _ID_EXT_ALLOWLIST = {".jpg", ".jpeg", ".png", ".webp"}
@@ -71,20 +73,36 @@ def _pick_extension(
 )
 async def create_session(
     data: SessionCreate,
+    request: Request,
     db: DbSession,
     storage: Storage,
 ) -> SessionCreateResponse:
-    """Create a new KYC session and get presigned URLs for upload."""
-    # Create session
+    """Create a new KYC session and get presigned URLs for upload.
+
+    SECURITY NOTE:
+    - client_ip is captured server-side from the request, NOT from client input
+    - ip_country is enriched server-side via GeoIP lookup (trusted)
+    - device_fingerprint and device_timezone are client-provided (untrusted)
+    """
+    # SECURITY: Capture client IP server-side using trusted proxy config
+    client_ip = extract_client_ip(request)
+
+    # SECURITY: Server-side IP geolocation (trusted, unlike client-provided)
+    # Falls back to client-provided ip_country if GeoIP unavailable
+    server_ip_country = lookup_ip_country(client_ip)
+    ip_country = server_ip_country or data.ip_country  # Prefer server-side
+
+    # Create session with server-side enrichment
     session = KYCSession(
         source=data.source,
         attack_family=data.attack_family,
         attack_severity=data.attack_severity,
         device_os=data.device_os,
         device_model=data.device_model,
-        ip_country=data.ip_country,
-        device_fingerprint=data.device_fingerprint,
-        device_timezone=data.device_timezone,
+        ip_country=ip_country,  # Server-enriched (trusted) or client fallback
+        device_fingerprint=data.device_fingerprint,  # Client-provided (untrusted)
+        device_timezone=data.device_timezone,  # Client-provided (untrusted)
+        client_ip=client_ip,  # SERVER-SIDE capture (trusted)
         status="pending",
     )
     db.add(session)
@@ -148,26 +166,55 @@ async def finalize_session(
     force: bool = False,
 ) -> dict:
     """Mark uploads complete and start processing.
-    
+
+    SECURITY: Uses row-level locking (SELECT FOR UPDATE) to prevent race conditions.
+    Multiple concurrent finalize calls will serialize, ensuring only one wins.
+
     Args:
         force: If True, allows restarting processing for stuck sessions.
     """
-    session = await db.get(KYCSession, session_id)
+    from sqlalchemy import select
+
+    # IDEMPOTENCY: Use SELECT FOR UPDATE to prevent race conditions
+    # This locks the row until the transaction commits, serializing concurrent calls
+    query = (
+        select(KYCSession)
+        .where(KYCSession.id == session_id)
+        .with_for_update(nowait=False)  # Block until lock is available
+    )
+    result = await db.execute(query)
+    session = result.scalar_one_or_none()
+
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Allow force-restart for stuck processing sessions
-    if session.status == "processing" and force:
-        # Session is stuck, allow retry
-        pass
-    elif session.status != "pending":
+    # Check status AFTER acquiring lock to prevent TOCTOU race
+    if session.status == "processing":
+        if force:
+            # Session is stuck, allow retry
+            pass
+        else:
+            raise HTTPException(
+                status_code=409,  # Conflict
+                detail="Session is already being processed. Use ?force=true to retry stuck sessions.",
+            )
+    elif session.status == "completed":
+        # Already done - idempotent success
+        return {"status": "completed", "message": "Session already processed"}
+    elif session.status == "failed" and not force:
         raise HTTPException(
             status_code=400,
-            detail=f"Session is already {session.status}. Use ?force=true to retry stuck sessions.",
+            detail="Session processing failed. Use ?force=true to retry.",
+        )
+    elif session.status != "pending" and not force:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Session is in unexpected state: {session.status}",
         )
 
-    # Update status
+    # Atomically update status within the same transaction (lock still held)
     session.status = "processing"
+    await db.flush()  # Ensure status is written before committing
 
     # Import settings to determine processing mode
     from app.config import settings
@@ -175,11 +222,11 @@ async def finalize_session(
     if settings.use_worker:
         # Production: use durable job queue (requires separate worker service)
         await enqueue_process_session(db, str(session_id))
-        await db.commit()
+        await db.commit()  # Releases the row lock
         return {"status": "processing", "message": "Session queued for worker processing"}
     else:
         # Development: process directly via background task (no worker needed)
-        await db.commit()
+        await db.commit()  # Releases the row lock
         backend = get_processing_backend()
         background_tasks.add_task(backend.process_session, str(session_id))
         return {"status": "processing", "message": "Session processing started"}
@@ -382,12 +429,14 @@ async def find_similar_sessions(
     # Use pgvector cosine distance for similarity search with threshold filtering
     # Select both the session and the computed distance for sorting/filtering
     distance_expr = KYCSession.face_embedding.cosine_distance(session.face_embedding)
-    
+
+    # PERFORMANCE: Use selectinload to prevent N+1 query when accessing session.result
     query = (
         select(
             KYCSession,
             distance_expr.label("distance"),
         )
+        .options(selectinload(KYCSession.result))  # Eager load results
         .where(KYCSession.id != session_id)
         .where(KYCSession.face_embedding.isnot(None))
         .where(distance_expr < max_distance)  # Filter by threshold

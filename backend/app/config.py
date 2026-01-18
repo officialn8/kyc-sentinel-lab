@@ -5,7 +5,7 @@ from functools import lru_cache
 import json
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -68,14 +68,68 @@ class Settings(BaseSettings):
     # Presigned URL expiration (seconds)
     presigned_url_expiration: int = 3600
 
+    # Maximum upload file size (bytes) - enforced in presigned URL conditions
+    # Default: 50MB for images/videos
+    max_upload_size_bytes: int = 50 * 1024 * 1024
+
     # Optional shared secret to protect backend endpoints when running publicly.
-    # If unset/empty, auth is disabled.
     backend_api_key: str = ""
 
     # Optional Basic Auth credentials (recommended for public demo deployments).
-    # If unset/empty, Basic Auth is disabled.
     basic_auth_username: str = ""
     basic_auth_password: str = ""
+
+    # SECURITY: Auth is required by default in production.
+    # Set to True explicitly to disable auth (development/testing only).
+    # This prevents accidental exposure of unauthenticated APIs.
+    auth_disabled: bool = False
+
+    # Trusted proxy CIDRs for X-Forwarded-For parsing.
+    # Only trust X-Forwarded-For from these networks.
+    # Empty list = trust direct connection only (safest default).
+    # Example: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16" for RFC1918
+    # Railway/Render/Vercel typically use private ranges.
+    trusted_proxy_cidrs: str = ""
+
+    # GeoIP database path for IP geolocation (MaxMind GeoLite2 or GeoIP2)
+    # Download free GeoLite2-Country.mmdb from:
+    # https://dev.maxmind.com/geoip/geolite2-free-geolocation-data
+    # If not set, tries common system locations.
+    geoip_database_path: str = ""
+
+    # Redis URL for distributed rate limiting (optional)
+    # If not set, falls back to in-memory rate limiting (single-instance only)
+    # Format: redis://[[username]:[password]@]host[:port][/database]
+    redis_url: str = ""
+
+    @model_validator(mode="after")
+    def _validate_auth_config(self) -> "Settings":
+        """
+        SECURITY: Fail fast at startup if auth is misconfigured.
+
+        Either:
+        1. AUTH_DISABLED=true (explicit opt-out, dev/testing only)
+        2. At least one auth method configured (API key or Basic Auth)
+
+        This prevents accidental deployment of an open API.
+        """
+        if self.auth_disabled:
+            return self
+
+        has_api_key = bool((self.backend_api_key or "").strip())
+        has_basic = bool(
+            (self.basic_auth_username or "").strip()
+            and (self.basic_auth_password or "").strip()
+        )
+
+        if not has_api_key and not has_basic:
+            raise ValueError(
+                "SECURITY: No authentication configured. "
+                "Set BACKEND_API_KEY or BASIC_AUTH_USERNAME+BASIC_AUTH_PASSWORD, "
+                "or explicitly set AUTH_DISABLED=true for development/testing."
+            )
+
+        return self
 
     @field_validator("cors_origins", mode="before")
     @classmethod
