@@ -255,6 +255,17 @@ class LocalBackend:
                 return
 
             try:
+                # Idempotency: skip if session already has results
+                existing_result = await db.scalar(
+                    select(KYCResult).where(KYCResult.session_id == session.id)
+                )
+                if existing_result is not None:
+                    logger.info(f"Session {session_id} already processed, skipping")
+                    if session.status != "completed":
+                        session.status = "completed"
+                        await db.commit()
+                    return
+
                 session.status = "processing"
                 await db.commit()
 
@@ -345,11 +356,17 @@ class LocalBackend:
                 pad_score = pad_result.overall_pad_score if pad_result else 0.0
                 doc_score = doc_result.doc_score
 
+                # Use configured scoring profile
+                from app.config import settings
+                from app.services.scoring import get_scoring_config
+                scoring_config = get_scoring_config(settings.scoring_profile)
+
                 risk_score, decision = compute_risk_score(
                     face_similarity=face_similarity,
                     pad_score=pad_score,
                     doc_score=doc_score,
                     reasons=reasons,
+                    config=scoring_config,
                 )
 
                 # Save result
@@ -619,7 +636,7 @@ class ModalBackend:
     async def process_session(self, session_id: str) -> None:
         """
         Full session processing pipeline using Modal GPU functions.
-        
+
         Orchestrates:
         1. Generate presigned URLs for assets
         2. Call Modal functions in parallel where possible
@@ -627,7 +644,8 @@ class ModalBackend:
         """
         import asyncio
         import base64
-        
+
+        from sqlalchemy import select
         from app.database import async_session_maker
         from app.models.session import KYCSession
         from app.models.result import KYCResult
@@ -643,6 +661,17 @@ class ModalBackend:
                 return
 
             try:
+                # Idempotency: skip if session already has results
+                existing_result = await db.scalar(
+                    select(KYCResult).where(KYCResult.session_id == session.id)
+                )
+                if existing_result is not None:
+                    logger.info(f"Session {session_id} already processed, skipping")
+                    if session.status != "completed":
+                        session.status = "completed"
+                        await db.commit()
+                    return
+
                 session.status = "processing"
                 await db.commit()
 
@@ -781,11 +810,17 @@ class ModalBackend:
                                 )
                             )
 
+                # Use configured scoring profile
+                from app.config import settings
+                from app.services.scoring import get_scoring_config
+                scoring_config = get_scoring_config(settings.scoring_profile)
+
                 risk_score, decision = compute_risk_score(
                     face_similarity=face_similarity,
                     pad_score=pad_score,
                     doc_score=doc_score,
                     reasons=reasons,
+                    config=scoring_config,
                 )
 
                 # Save result

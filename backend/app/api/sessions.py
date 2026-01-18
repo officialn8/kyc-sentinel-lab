@@ -168,17 +168,21 @@ async def finalize_session(
 
     # Update status
     session.status = "processing"
-    
-    # Also enqueue for worker-based processing (for production with separate worker)
-    await enqueue_process_session(db, str(session_id))
-    await db.commit()
 
-    # Run processing directly in background task (for local development)
-    # This runs in the same process, no separate worker needed
-    backend = get_processing_backend()
-    background_tasks.add_task(backend.process_session, str(session_id))
+    # Import settings to determine processing mode
+    from app.config import settings
 
-    return {"status": "processing", "message": "Session queued for processing"}
+    if settings.use_worker:
+        # Production: use durable job queue (requires separate worker service)
+        await enqueue_process_session(db, str(session_id))
+        await db.commit()
+        return {"status": "processing", "message": "Session queued for worker processing"}
+    else:
+        # Development: process directly via background task (no worker needed)
+        await db.commit()
+        backend = get_processing_backend()
+        background_tasks.add_task(backend.process_session, str(session_id))
+        return {"status": "processing", "message": "Session processing started"}
 
 
 @router.get("", response_model=SessionListResponse)
