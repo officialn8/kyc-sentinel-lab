@@ -200,16 +200,16 @@ async def create_session(
     selfie_key = f"sessions/{session.id}/selfie{selfie_ext}"
     id_key = f"sessions/{session.id}/id{id_ext}"
 
-    # Use POST uploads with size enforcement
-    selfie_upload = await storage.generate_presigned_post(
+    # Generate presigned upload config (POST for S3/MinIO, PUT for R2)
+    selfie_upload = await storage.generate_presigned_upload(
         selfie_key,
         content_type=selfie_content_type,
-        max_size_bytes=settings.max_upload_size_bytes
+        max_size_bytes=settings.max_upload_size_bytes,
     )
-    id_upload = await storage.generate_presigned_post(
+    id_upload = await storage.generate_presigned_upload(
         id_key,
         content_type=id_content_type,
-        max_size_bytes=settings.max_upload_size_bytes
+        max_size_bytes=settings.max_upload_size_bytes,
     )
 
     # Store asset keys
@@ -240,14 +240,18 @@ async def create_session(
     return SessionCreateResponse(
         session=SessionResponse.model_validate(session),
         selfie_upload=PresignedUpload(
+            method=selfie_upload.get("method", "POST"),
             url=selfie_upload["url"],
             fields=selfie_upload["fields"],
+            headers=selfie_upload.get("headers", {}),
             asset_key=selfie_key,
             expires_in=settings.presigned_url_expiration,
         ),
         id_upload=PresignedUpload(
+            method=id_upload.get("method", "POST"),
             url=id_upload["url"],
             fields=id_upload["fields"],
+            headers=id_upload.get("headers", {}),
             asset_key=id_key,
             expires_in=settings.presigned_url_expiration,
         ),

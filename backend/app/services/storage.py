@@ -33,6 +33,17 @@ class StorageService:
         self._client = None
         self._client_lock = asyncio.Lock()
 
+    def _resolve_upload_mode(self) -> str:
+        """Resolve presigned upload mode based on settings and endpoint."""
+        mode = (settings.presigned_upload_mode or "auto").lower()
+        if mode in ("post", "put"):
+            return mode
+        endpoint = (self.endpoint_url or "").lower()
+        # Cloudflare R2 does not support presigned POST uploads.
+        if "r2.cloudflarestorage.com" in endpoint:
+            return "put"
+        return "post"
+
     def _get_client_config(self) -> dict:
         """Get boto3 client configuration."""
         return {
@@ -166,6 +177,43 @@ class StorageService:
             "fields": response["fields"]
         }
 
+    async def generate_presigned_upload(
+        self,
+        key: str,
+        content_type: str,
+        max_size_bytes: int | None = None,
+    ) -> dict:
+        """Generate presigned upload config (POST or PUT).
+
+        R2 does not support presigned POST, so we fall back to PUT.
+        """
+        mode = self._resolve_upload_mode()
+        if mode == "post":
+            response = await self.generate_presigned_post(
+                key,
+                content_type=content_type,
+                max_size_bytes=max_size_bytes,
+            )
+            return {
+                "method": "POST",
+                "url": response["url"],
+                "fields": response.get("fields", {}),
+                "headers": {},
+            }
+
+        # PUT upload (R2-compatible)
+        url, _ = await self.generate_presigned_upload_url(
+            key,
+            content_type=content_type,
+            max_size_bytes=max_size_bytes,
+        )
+        return {
+            "method": "PUT",
+            "url": url,
+            "fields": {},
+            "headers": {"Content-Type": content_type},
+        }
+
     async def generate_presigned_download_url(self, key: str, expiration: int | None = None) -> str:
         """Generate a presigned URL for downloading an object.
         
@@ -288,4 +336,3 @@ class StorageService:
 def get_storage_service() -> StorageService:
     """Get cached storage service instance."""
     return StorageService()
-

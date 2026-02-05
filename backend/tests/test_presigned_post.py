@@ -10,8 +10,8 @@ os.environ["AUTH_DISABLED"] = "true"
 
 
 @pytest.mark.asyncio
-async def test_create_session_returns_presigned_post(client: AsyncClient):
-    """Test that creating a session returns presigned POST data."""
+async def test_create_session_returns_presigned_upload(client: AsyncClient):
+    """Test that creating a session returns presigned upload data."""
     # Create session
     response = await client.post(
         "/api/sessions",
@@ -38,22 +38,32 @@ async def test_create_session_returns_presigned_post(client: AsyncClient):
     selfie_upload = data["selfie_upload"]
     assert "url" in selfie_upload
     assert "fields" in selfie_upload
+    assert "headers" in selfie_upload
+    assert "method" in selfie_upload
     assert "asset_key" in selfie_upload
     assert "expires_in" in selfie_upload
 
-    # Verify fields include required S3 fields
-    assert "Content-Type" in selfie_upload["fields"]
-    assert selfie_upload["fields"]["Content-Type"] == "image/jpeg"
+    # Verify content type is enforced via fields (POST) or headers (PUT)
+    if selfie_upload["method"] == "POST":
+        assert "Content-Type" in selfie_upload["fields"]
+        assert selfie_upload["fields"]["Content-Type"] == "image/jpeg"
+    else:
+        assert selfie_upload["headers"]["Content-Type"] == "image/jpeg"
 
     # Verify ID upload structure
     id_upload = data["id_upload"]
     assert "url" in id_upload
     assert "fields" in id_upload
+    assert "headers" in id_upload
+    assert "method" in id_upload
     assert "asset_key" in id_upload
     assert "expires_in" in id_upload
 
     # Verify content type
-    assert id_upload["fields"]["Content-Type"] == "image/png"
+    if id_upload["method"] == "POST":
+        assert id_upload["fields"]["Content-Type"] == "image/png"
+    else:
+        assert id_upload["headers"]["Content-Type"] == "image/png"
 
     # Asset keys should follow expected pattern
     assert selfie_upload["asset_key"].endswith("/selfie.jpg")
@@ -65,8 +75,8 @@ async def test_create_session_returns_presigned_post(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_session_enforces_content_type(client: AsyncClient):
-    """Test that content type is enforced based on file extension."""
+async def test_session_rejects_mismatched_content_type(client: AsyncClient):
+    """Test that mismatched content type is rejected."""
     # Test with mismatched content type
     response = await client.post(
         "/api/sessions",
@@ -78,12 +88,4 @@ async def test_session_enforces_content_type(client: AsyncClient):
             "id_content_type": "image/png",
         },
     )
-
-    assert response.status_code == 200
-    data = response.json()
-
-    # Content type should be based on extension
-    assert data["selfie_upload"]["fields"]["Content-Type"] == "video/mp4"
-
-    # But asset key should still use .jpg extension
-    assert data["selfie_upload"]["asset_key"].endswith("/selfie.jpg")
+    assert response.status_code == 400

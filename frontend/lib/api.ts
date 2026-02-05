@@ -75,8 +75,10 @@ export interface SimilarFacesListResponse {
 }
 
 export interface PresignedUpload {
+  method?: "POST" | "PUT";
   url: string;
   fields: Record<string, string>;
+  headers?: Record<string, string>;
   asset_key: string;
   expires_in: number;
 }
@@ -283,6 +285,43 @@ export async function uploadToPresignedPost(
   });
 }
 
+// PUT-based upload with progress tracking (R2-compatible)
+export async function uploadToPresignedPut(
+  upload: PresignedUpload,
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+      } else {
+        reject(new Error(`Upload failed: ${xhr.status}`));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error('Network error during upload'));
+    xhr.open('PUT', upload.url);
+
+    const headers = upload.headers || {};
+    Object.entries(headers).forEach(([key, value]) => {
+      xhr.setRequestHeader(key, value);
+    });
+
+    xhr.send(file);
+  });
+}
+
 // Legacy PUT-based upload (deprecated)
 export async function uploadToPresignedUrl(
   url: string,
@@ -301,5 +340,4 @@ export async function uploadToPresignedUrl(
     throw new Error(`Upload failed: ${res.status}`);
   }
 }
-
 

@@ -14,7 +14,12 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { api, uploadToPresignedPost, PresignedUpload } from "@/lib/api";
+import {
+  api,
+  uploadToPresignedPost,
+  uploadToPresignedPut,
+  PresignedUpload,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -308,6 +313,10 @@ export default function UploadPage() {
     file: File,
     onProgress: (progress: number) => void
   ): Promise<void> => {
+    if (upload.method === "PUT") {
+      await uploadToPresignedPut(upload, file, onProgress);
+      return;
+    }
     await uploadToPresignedPost(upload, file, onProgress);
   };
 

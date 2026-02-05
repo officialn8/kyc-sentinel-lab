@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     # Default: 50MB for images/videos
     max_upload_size_bytes: int = 50 * 1024 * 1024
 
+    # Upload signing mode for presigned uploads:
+    # - "auto": use POST for MinIO/local, PUT for Cloudflare R2
+    # - "post": always use presigned POST (S3/MinIO)
+    # - "put": always use presigned PUT (R2-compatible)
+    presigned_upload_mode: Literal["auto", "post", "put"] = "auto"
+
     # Audit logging
     audit_log_prefix: str = "audit"
 

@@ -49,10 +49,12 @@ class SessionCreate(BaseModel):
 
 
 class PresignedUpload(BaseModel):
-    """Presigned POST upload configuration."""
+    """Presigned upload configuration (POST or PUT)."""
 
+    method: str = "POST"
     url: str
-    fields: dict[str, str]
+    fields: dict[str, str] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
     asset_key: str
     expires_in: int
 
@@ -176,6 +178,5 @@ class SimilarFacesListResponse(BaseModel):
     threshold: float
     matches: list[SimilarFaceResponse]
     total_matches: int
-
 
 
