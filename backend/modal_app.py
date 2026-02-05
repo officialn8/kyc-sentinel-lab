@@ -4,7 +4,7 @@ Modal serverless GPU functions for KYC Sentinel.
 This module defines three GPU-accelerated functions:
 1. extract_frames - Direct R2 access for video processing
 2. analyze_face - Face detection and matching using InsightFace (GPU)
-3. analyze_document - OCR and document analysis using PaddleOCR (CPU)
+3. analyze_document - OCR and document analysis using PaddleOCR (GPU when available)
 
 The hybrid storage pattern:
 - Video extraction uses direct R2 credentials (for byte-range requests)
@@ -15,10 +15,10 @@ import modal
 from typing import Optional
 
 # Define the GPU container image with all ML dependencies
-# Using NVIDIA CUDA runtime image which has cuBLAS, cuDNN pre-installed for onnxruntime-gpu
+# Using NVIDIA CUDA runtime image compatible with PaddlePaddle GPU wheels
 gpu_image = (
     modal.Image.from_registry(
-        "nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04",
+        "nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04",
         add_python="3.11",
     )
     # Clear the default entrypoint from NVIDIA image
@@ -49,10 +49,12 @@ gpu_image = (
         "onnxruntime-gpu>=1.16.0",
     )
     .pip_install(
-        # Document OCR - CPU version (simpler, no additional CUDA deps)
-        "paddlepaddle==3.0.0",
-        "paddleocr>=2.8.0",
+        # Document OCR - GPU-enabled PaddlePaddle
+        # Use CUDA 11.8 wheels for broad compatibility
+        "paddlepaddle-gpu==3.2.0",
+        index_url="https://www.paddlepaddle.org.cn/packages/stable/cu118/",
     )
+    .pip_install("paddleocr>=2.8.0")
 )
 
 # Create Modal app
@@ -331,7 +333,7 @@ def analyze_document(
     Analyze ID document using PaddleOCR.
 
     Uses presigned URL to download image (stateless, no credentials needed).
-    Runs on CPU for stability (PaddlePaddle GPU setup is complex).
+    Runs on GPU when available.
 
     Args:
         id_url: Presigned URL to download ID image
@@ -378,14 +380,17 @@ def analyze_document(
     text_boxes = []
     confidences = []
 
-    # Initialize PaddleOCR (v2.8+ API with CPU)
-    import os
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Force CPU mode for PaddleOCR
+    # Initialize PaddleOCR (v2.8+ API) with GPU if compiled
+    import paddle
+    use_gpu = paddle.device.is_compiled_with_cuda()
+    device = "gpu" if use_gpu else "cpu"
+    evidence["ocr_device"] = device
+    print(f"OCR device: {device}")
 
     ocr = PaddleOCR(
         use_textline_orientation=True,
         lang="en",
-        device="cpu",
+        device=device,
     )
     result = ocr.predict(id_img)
 
@@ -560,4 +565,4 @@ def main():
     print("Functions available:")
     print("  - extract_frames (GPU, direct R2 access)")
     print("  - analyze_face (GPU with CUDA, presigned URLs)")
-    print("  - analyze_document (CPU, presigned URLs)")
+    print("  - analyze_document (GPU when available, presigned URLs)")

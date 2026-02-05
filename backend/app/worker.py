@@ -12,10 +12,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import select
 
+from app.config import settings
 from app.database import async_session_maker
 from app.models.job import KYCJob
 from app.models.session import KYCSession
@@ -26,6 +29,7 @@ logger = logging.getLogger("kyc.worker")
 
 POLL_INTERVAL_SECONDS = float(os.environ.get("WORKER_POLL_INTERVAL", "1.0"))
 MAX_ATTEMPTS = int(os.environ.get("WORKER_MAX_ATTEMPTS", "3"))
+REAP_INTERVAL_SECONDS = float(os.environ.get("WORKER_REAP_INTERVAL", "60.0"))
 
 
 async def _claim_next_job() -> Optional[KYCJob]:
@@ -78,6 +82,41 @@ async def _ensure_session_failed(session_id) -> None:
                 sess.status = "failed"
 
 
+async def _reap_stuck_jobs() -> int:
+    """Requeue or fail jobs stuck in processing beyond the timeout."""
+    timeout_seconds = settings.processing_stuck_timeout_seconds
+    if timeout_seconds <= 0:
+        return 0
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)
+    reclaimed = 0
+
+    async with async_session_maker() as db:
+        async with db.begin():
+            stmt = (
+                select(KYCJob)
+                .where(KYCJob.status == "processing")
+                .where(KYCJob.updated_at < cutoff)
+                .with_for_update(skip_locked=True)
+            )
+            res = await db.execute(stmt)
+            jobs = res.scalars().all()
+
+            for job in jobs:
+                reclaimed += 1
+                if (job.attempts or 0) >= MAX_ATTEMPTS:
+                    job.status = "failed"
+                    job.last_error = "Stuck processing timeout"
+                    sess = await db.get(KYCSession, job.session_id)
+                    if sess and sess.status not in ("completed", "failed"):
+                        sess.status = "failed"
+                else:
+                    job.status = "pending"
+                    job.last_error = "Requeued after stuck processing timeout"
+
+    return reclaimed
+
+
 async def _run_job(job: KYCJob) -> None:
     backend = get_processing_backend()
 
@@ -101,8 +140,16 @@ async def run_forever() -> None:
     logger.info(
         "worker starting (poll=%.2fs, max_attempts=%d)", POLL_INTERVAL_SECONDS, MAX_ATTEMPTS
     )
+    last_reap = 0.0
 
     while True:
+        now = time.time()
+        if now - last_reap >= REAP_INTERVAL_SECONDS:
+            reclaimed = await _reap_stuck_jobs()
+            if reclaimed:
+                logger.warning("reclaimed %d stuck jobs", reclaimed)
+            last_reap = now
+
         job = await _claim_next_job()
         if job is None:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
@@ -132,5 +179,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

@@ -75,6 +75,7 @@ class FraudSignals:
     
     velocity_check: Optional[VelocityCheck] = None
     geo_anomaly: Optional[GeoAnomalyResult] = None
+    fraud_ring: Optional[dict] = None
     reason_codes: list[str] = field(default_factory=list)
     overall_fraud_score: float = 0.0  # 0-1, higher = more suspicious
 
@@ -351,10 +352,81 @@ def _get_country_from_timezone(timezone: str) -> Optional[str]:
     return tz_to_country.get(timezone)
 
 
+async def check_fraud_ring(
+    db: AsyncSession,
+    *,
+    session_id: Optional[str],
+    face_embedding: Optional[list[float]],
+    similarity_threshold: Optional[float] = None,
+    min_matches: Optional[int] = None,
+    sample_limit: int = 3,
+) -> Optional[dict]:
+    """Detect fraud ring linkage via similar face embeddings.
+
+    Returns a dict with match_count and max_similarity if threshold met.
+    """
+    if not session_id or not face_embedding:
+        return None
+
+    threshold = similarity_threshold or settings.fraud_ring_similarity_threshold
+    required_matches = min_matches or settings.fraud_ring_min_matches
+    if required_matches <= 0:
+        return None
+
+    max_distance = 1.0 - threshold
+    distance_expr = KYCSession.face_embedding.cosine_distance(face_embedding)
+
+    count_stmt = (
+        select(
+            func.count().label("match_count"),
+            func.min(distance_expr).label("min_distance"),
+        )
+        .where(KYCSession.id != session_id)
+        .where(KYCSession.face_embedding.isnot(None))
+        .where(KYCSession.deleted_at.is_(None))
+        .where(distance_expr < max_distance)
+    )
+    count_row = await db.execute(count_stmt)
+    match_count, min_distance = count_row.one()
+
+    if not match_count or match_count < required_matches:
+        return None
+
+    # Sample a few closest matches for evidence
+    sample_stmt = (
+        select(KYCSession.id, distance_expr.label("distance"))
+        .where(KYCSession.id != session_id)
+        .where(KYCSession.face_embedding.isnot(None))
+        .where(KYCSession.deleted_at.is_(None))
+        .where(distance_expr < max_distance)
+        .order_by(distance_expr)
+        .limit(sample_limit)
+    )
+    sample_rows = (await db.execute(sample_stmt)).all()
+    samples = [
+        {
+            "session_id": str(row[0]),
+            "similarity": round(1.0 - float(row[1]), 4),
+        }
+        for row in sample_rows
+    ]
+
+    max_similarity = 1.0 - float(min_distance) if min_distance is not None else threshold
+
+    return {
+        "match_count": int(match_count),
+        "max_similarity": round(max_similarity, 4),
+        "threshold": threshold,
+        "samples": samples,
+    }
+
+
 async def compute_fraud_signals(
     db: AsyncSession,
     device_fingerprint: Optional[str] = None,
     client_ip: Optional[str] = None,
+    session_id: Optional[str] = None,
+    face_embedding: Optional[list[float]] = None,
     document_country: Optional[str] = None,
     device_country: Optional[str] = None,
     device_timezone: Optional[str] = None,
@@ -373,6 +445,8 @@ async def compute_fraud_signals(
         document_country: Country from document MRZ/OCR
         device_country: Country from IP geolocation (trusted if server-enriched)
         device_timezone: Timezone from device (client-provided, for cross-validation)
+        session_id: Session ID for fraud ring detection
+        face_embedding: Face embedding for similarity search
         exclude_session_id: Session ID to exclude from velocity counts
 
     SECURITY NOTE:
@@ -415,6 +489,16 @@ async def compute_fraud_signals(
     if geo.is_anomalous:
         result.reason_codes.append("FRAUD_GEO_MISMATCH")
         fraud_score += geo.confidence * 0.3
+
+    # Fraud ring detection (advisory only)
+    fraud_ring = await check_fraud_ring(
+        db=db,
+        session_id=session_id,
+        face_embedding=face_embedding,
+    )
+    if fraud_ring:
+        result.fraud_ring = fraud_ring
+        result.reason_codes.append("FRAUD_RING_LINKED")
 
     result.overall_fraud_score = min(fraud_score, 1.0)
 

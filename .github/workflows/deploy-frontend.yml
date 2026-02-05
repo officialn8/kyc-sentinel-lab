@@ -1,0 +1,138 @@
+name: Deploy Frontend
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/deploy-frontend.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  deploy-frontend:
+    name: Deploy Frontend to Vercel
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set environment
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "DEPLOY_ENV=${{ inputs.environment }}" >> $GITHUB_ENV
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "DEPLOY_ENV=production" >> $GITHUB_ENV
+          else
+            echo "DEPLOY_ENV=staging" >> $GITHUB_ENV
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      - name: Pull Vercel Environment Information
+        working-directory: ./frontend
+        run: |
+          if [ "${{ env.DEPLOY_ENV }}" = "production" ]; then
+            vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+            vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+          else
+            vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
+            vercel build --token=${{ secrets.VERCEL_TOKEN }}
+          fi
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Set Environment Variables
+        working-directory: ./frontend
+        run: |
+          # Set backend URL based on environment
+          if [ "${{ env.DEPLOY_ENV }}" = "production" ]; then
+            vercel env add BACKEND_URL "${{ vars.PROD_API_URL }}" production --token=${{ secrets.VERCEL_TOKEN }} --yes
+            vercel env add NEXT_PUBLIC_BACKEND_WS_URL "${{ vars.PROD_WS_URL }}" production --token=${{ secrets.VERCEL_TOKEN }} --yes
+          else
+            vercel env add BACKEND_URL "${{ vars.STAGING_API_URL }}" preview --token=${{ secrets.VERCEL_TOKEN }} --yes
+            vercel env add NEXT_PUBLIC_BACKEND_WS_URL "${{ vars.STAGING_WS_URL }}" preview --token=${{ secrets.VERCEL_TOKEN }} --yes
+          fi
+
+      - name: Deploy to Vercel
+        working-directory: ./frontend
+        run: |
+          if [ "${{ env.DEPLOY_ENV }}" = "production" ]; then
+            vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+          else
+            vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }}
+          fi
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Get deployment URL
+        id: deployment
+        working-directory: ./frontend
+        run: |
+          if [ "${{ env.DEPLOY_ENV }}" = "production" ]; then
+            echo "url=${{ vars.PROD_FRONTEND_URL }}" >> $GITHUB_OUTPUT
+          else
+            DEPLOYMENT_URL=$(vercel inspect --token=${{ secrets.VERCEL_TOKEN }} | grep "URL" | head -1 | awk '{print $2}')
+            echo "url=$DEPLOYMENT_URL" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '🚀 Frontend deployed to: ${{ steps.deployment.outputs.url }}'
+            })
+
+      - name: Run E2E tests
+        if: env.DEPLOY_ENV == 'staging'
+        run: |
+          # Install Playwright
+          cd frontend
+          npm ci
+          npx playwright install chromium
+
+          # Run E2E tests against staging
+          DEPLOYMENT_URL="${{ steps.deployment.outputs.url }}" npm run test:e2e
+
+  lighthouse-check:
+    name: Lighthouse Performance Check
+    runs-on: ubuntu-latest
+    needs: deploy-frontend
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Lighthouse
+        uses: treosh/lighthouse-ci-action@v11
+        with:
+          urls: |
+            ${{ needs.deploy-frontend.outputs.deployment-url }}
+            ${{ needs.deploy-frontend.outputs.deployment-url }}/upload
+            ${{ needs.deploy-frontend.outputs.deployment-url }}/sessions
+          uploadArtifacts: true
+          temporaryPublicStorage: true

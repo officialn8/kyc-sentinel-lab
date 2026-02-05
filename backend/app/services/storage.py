@@ -122,7 +122,7 @@ class StorageService:
         content_type: str,
         max_size_bytes: int | None = None,
     ) -> dict:
-        """Generate a presigned POST for uploading with size enforcement.
+        """Generate presigned POST with size and type enforcement.
 
         SECURITY: This method enforces content-length limits server-side.
         Use this instead of generate_presigned_upload_url when size enforcement
@@ -139,26 +139,32 @@ class StorageService:
         if max_size_bytes is None:
             max_size_bytes = settings.max_upload_size_bytes
 
-        async with self.session.client(**self._get_client_config()) as client:
-            conditions = [
-                {"bucket": self.bucket},
-                ["starts-with", "$key", key],  # Key must match exactly
-                ["content-length-range", 1, max_size_bytes],  # Size enforcement
-                {"Content-Type": content_type},  # Content type enforcement
-            ]
+        # Use persistent client for connection pooling
+        client = await self._get_client()
 
-            fields = {
-                "Content-Type": content_type,
-            }
+        conditions = [
+            ["content-length-range", 1, max_size_bytes],
+            ["eq", "$Content-Type", content_type],
+            ["eq", "$key", key],
+            {"bucket": self.bucket},
+        ]
 
-            response = await client.generate_presigned_post(
-                Bucket=self.bucket,
-                Key=key,
-                Fields=fields,
-                Conditions=conditions,
-                ExpiresIn=self.url_expiration,
-            )
-            return response
+        fields = {
+            "Content-Type": content_type,
+        }
+
+        response = await client.generate_presigned_post(
+            Bucket=self.bucket,
+            Key=key,
+            Fields=fields,
+            Conditions=conditions,
+            ExpiresIn=self.url_expiration,
+        )
+
+        return {
+            "url": response["url"],
+            "fields": response["fields"]
+        }
 
     async def generate_presigned_download_url(self, key: str, expiration: int | None = None) -> str:
         """Generate a presigned URL for downloading an object.
@@ -195,6 +201,52 @@ class StorageService:
         """Delete an object from storage."""
         client = await self._get_client()
         await client.delete_object(Bucket=self.bucket, Key=key)
+
+    async def list_objects(self, prefix: str) -> list[str]:
+        """List object keys under a prefix."""
+        client = await self._get_client()
+        keys: list[str] = []
+        continuation_token = None
+
+        while True:
+            params = {"Bucket": self.bucket, "Prefix": prefix}
+            if continuation_token:
+                params["ContinuationToken"] = continuation_token
+
+            response = await client.list_objects_v2(**params)
+            for item in response.get("Contents", []):
+                key = item.get("Key")
+                if key:
+                    keys.append(key)
+
+            if not response.get("IsTruncated"):
+                break
+            continuation_token = response.get("NextContinuationToken")
+
+        return keys
+
+    async def delete_prefix(self, prefix: str) -> int:
+        """Delete all objects under a prefix.
+
+        Returns:
+            Number of objects deleted.
+        """
+        client = await self._get_client()
+        keys = await self.list_objects(prefix)
+        if not keys:
+            return 0
+
+        deleted = 0
+        # Delete in batches of 1000 (S3 limit)
+        for i in range(0, len(keys), 1000):
+            batch = keys[i:i + 1000]
+            response = await client.delete_objects(
+                Bucket=self.bucket,
+                Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True},
+            )
+            deleted += len(response.get("Deleted", []))
+
+        return deleted
 
     async def get_object_size(self, key: str) -> int:
         """Get the size of an object in bytes.
@@ -236,6 +288,4 @@ class StorageService:
 def get_storage_service() -> StorageService:
     """Get cached storage service instance."""
     return StorageService()
-
-
 

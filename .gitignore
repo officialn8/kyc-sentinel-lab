@@ -57,5 +57,23 @@ temp/
 # Generated test fixtures (regenerate with generate_fixtures.py)
 backend/tests/fixtures/*.jpg
 
+#Documentation
+docs/
 
+#UI_TRANSFORMATION_SUMMARY.md
+UI_TRANSFORMATION_SUMMARY.md
 
+#FILES_MODIFIED.md
+FILES_MODIFIED.md
+
+#IMPLEMENTATION_PLAN.md
+IMPLEMENTATION_PLAN.md
+
+#DEPLOYMENT.md
+DEPLOYMENT.md 
+
+#QUICK_REFERENCE.md
+QUICK_REFERENCE.md
+
+#DEPLOYMENT_GUIDE.md
+DEPLOYMENT_GUIDE.md

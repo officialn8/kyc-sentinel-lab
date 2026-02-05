@@ -14,7 +14,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { api, uploadToPresignedUrl } from "@/lib/api";
+import { api, uploadToPresignedPost, PresignedUpload } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -302,32 +302,13 @@ export default function UploadPage() {
     },
   });
 
-  // Upload with progress tracking
+  // Upload with progress tracking (presigned POST)
   const uploadWithProgress = async (
-    url: string,
+    upload: PresignedUpload,
     file: File,
     onProgress: (progress: number) => void
   ): Promise<void> => {
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.upload.addEventListener("progress", (e) => {
-        if (e.lengthComputable) {
-          const progress = Math.round((e.loaded / e.total) * 100);
-          onProgress(progress);
-        }
-      });
-      xhr.addEventListener("load", () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          resolve();
-        } else {
-          reject(new Error(`Upload failed with status ${xhr.status}`));
-        }
-      });
-      xhr.addEventListener("error", () => reject(new Error("Upload failed")));
-      xhr.open("PUT", url);
-      xhr.setRequestHeader("Content-Type", file.type);
-      xhr.send(file);
-    });
+    await uploadToPresignedPost(upload, file, onProgress);
   };
 
   const uploadMutation = useMutation({
@@ -343,7 +324,7 @@ export default function UploadPage() {
       setUploadProgress({ selfie: 0, idDoc: 0 });
 
       // Create session
-      const { session, upload_urls } = await api.createSession({
+      const { session, selfie_upload, id_upload } = await api.createSession({
         source: "upload",
         ...deviceInfo,
         selfie_filename: selfie.file.name,
@@ -354,10 +335,10 @@ export default function UploadPage() {
 
       // Upload files with progress
       await Promise.all([
-        uploadWithProgress(upload_urls.selfie_upload_url, selfie.file, (p) =>
+        uploadWithProgress(selfie_upload, selfie.file, (p) =>
           setUploadProgress((prev) => ({ ...prev, selfie: p }))
         ),
-        uploadWithProgress(upload_urls.id_upload_url, idDoc.file, (p) =>
+        uploadWithProgress(id_upload, idDoc.file, (p) =>
           setUploadProgress((prev) => ({ ...prev, idDoc: p }))
         ),
       ]);

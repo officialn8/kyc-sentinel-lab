@@ -11,11 +11,22 @@ import logging
 
 import cv2
 import numpy as np
+from sqlalchemy.exc import IntegrityError
 
 from app.services.processing.protocol import FrameResult, FaceResult, DocResult
 from app.services.processing.helpers import is_video, build_reasons
 
 logger = logging.getLogger(__name__)
+
+
+def _is_unique_result_violation(err: IntegrityError) -> bool:
+    """Detect duplicate result insert for the same session."""
+    message = str(getattr(err, "orig", err))
+    return (
+        "ix_kyc_results_session_id_unique" in message
+        or "kyc_results_session_id_key" in message
+        or "UNIQUE constraint failed: kyc_results.session_id" in message
+    )
 
 
 class ModalBackend:
@@ -202,6 +213,7 @@ class ModalBackend:
                 # Compute scores
                 face_similarity = face_result_raw.get("similarity") or 0.0
                 doc_score = doc_result_raw.get("doc_score", 0.0)
+                face_embedding = face_result_raw.get("selfie_embedding")
                 
                 # PAD analysis for video
                 pad_score = 0.0
@@ -258,6 +270,58 @@ class ModalBackend:
                                     pad_flag=len(fm.pad_flags) > 0,
                                 )
                             )
+
+                # Fraud detection (advisory)
+                from app.services.fraud_detection import compute_fraud_signals
+
+                fraud_signals = await compute_fraud_signals(
+                    db=db,
+                    device_fingerprint=session.device_fingerprint,
+                    client_ip=session.client_ip,
+                    session_id=str(session.id),
+                    face_embedding=face_embedding,
+                    document_country=doc_result_raw.get("evidence", {}).get("mrz_country")
+                    or doc_result_raw.get("evidence", {}).get("ocr_country"),
+                    device_country=session.ip_country,
+                    device_timezone=session.device_timezone,
+                    exclude_session_id=str(session.id),
+                )
+                for code in fraud_signals.reason_codes:
+                    reason_code = getattr(ReasonCode, code, None)
+                    if reason_code:
+                        evidence = {}
+                        if fraud_signals.velocity_check:
+                            evidence["velocity"] = {
+                                "device_1h": fraud_signals.velocity_check.device_submissions_1h,
+                                "device_24h": fraud_signals.velocity_check.device_submissions_24h,
+                                "ip_1h": fraud_signals.velocity_check.ip_submissions_1h,
+                                "ip_24h": fraud_signals.velocity_check.ip_submissions_24h,
+                                "flags": fraud_signals.velocity_check.flags,
+                            }
+                        if fraud_signals.geo_anomaly:
+                            evidence["geo"] = {
+                                "document_country": fraud_signals.geo_anomaly.document_country,
+                                "device_country": fraud_signals.geo_anomaly.device_country,
+                                "anomaly_type": fraud_signals.geo_anomaly.anomaly_type,
+                                "confidence": fraud_signals.geo_anomaly.confidence,
+                            }
+                        if fraud_signals.fraud_ring:
+                            evidence["fraud_ring"] = fraud_signals.fraud_ring
+                        message = REASON_MESSAGES.get(reason_code, code)
+                        if code == "FRAUD_RING_LINKED" and fraud_signals.fraud_ring:
+                            message = message.format(
+                                match_count=fraud_signals.fraud_ring.get("match_count"),
+                                max_similarity=fraud_signals.fraud_ring.get("max_similarity"),
+                            )
+                        reasons.append(
+                            KYCReason(
+                                session_id=session.id,
+                                code=code,
+                                severity=get_reason_severity(reason_code),
+                                message=message,
+                                evidence=evidence,
+                            )
+                        )
 
                 # Scoring
                 await emit_progress(session_id, "progress", step="scoring", progress=0.8, message="Computing risk score...")
@@ -323,9 +387,40 @@ class ModalBackend:
                     "risk_score": risk_score,
                 })
 
+                # Audit log
+                from app.services.audit import log_audit_event, AuditActor
+                await log_audit_event(
+                    db,
+                    event_type="session.processing_completed",
+                    status="success",
+                    actor=AuditActor(actor_type="system"),
+                    session_id=str(session.id),
+                    resource_type="session",
+                    resource_id=str(session.id),
+                    metadata={"decision": decision, "risk_score": risk_score},
+                )
+
+            except IntegrityError as e:
+                # Handle concurrent processing attempts gracefully
+                await db.rollback()
+                if _is_unique_result_violation(e):
+                    existing_result = await db.scalar(
+                        select(KYCResult).where(KYCResult.session_id == session.id)
+                    )
+                    if existing_result is not None:
+                        session = await db.get(KYCSession, session_id)
+                        if session and session.status != "completed":
+                            session.status = "completed"
+                            await db.commit()
+                        return
+                raise
+
             except Exception as e:
-                session.status = "failed"
-                await db.commit()
+                await db.rollback()
+                session = await db.get(KYCSession, session_id)
+                if session is not None:
+                    session.status = "failed"
+                    await db.commit()
                 # Emit failure event
                 await emit_progress(session_id, "failed", error=str(e))
 
@@ -335,6 +430,19 @@ class ModalBackend:
                     "session_id": session_id,
                     "error": str(e),
                 })
+
+                # Audit log
+                from app.services.audit import log_audit_event, AuditActor
+                await log_audit_event(
+                    db,
+                    event_type="session.processing_failed",
+                    status="failed",
+                    actor=AuditActor(actor_type="system"),
+                    session_id=str(session.id),
+                    resource_type="session",
+                    resource_id=str(session.id),
+                    metadata={"error": str(e)},
+                )
                 raise
 
     async def generate_synthetic_session(

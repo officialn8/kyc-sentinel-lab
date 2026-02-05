@@ -1,0 +1,199 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-backend.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+jobs:
+  validate-environment:
+    name: Validate Environment Configuration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set environment based on branch
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ENVIRONMENT=${{ inputs.environment }}" >> $GITHUB_ENV
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "ENVIRONMENT=production" >> $GITHUB_ENV
+          elif [ "${{ github.ref }}" = "refs/heads/staging" ]; then
+            echo "ENVIRONMENT=staging" >> $GITHUB_ENV
+          else
+            echo "ENVIRONMENT=ci" >> $GITHUB_ENV
+          fi
+
+      - name: Load environment secrets
+        run: |
+          # Set variables based on environment
+          if [ "${{ env.ENVIRONMENT }}" = "production" ]; then
+            echo "::add-mask::${{ secrets.PROD_BACKEND_API_KEY }}"
+            echo "::add-mask::${{ secrets.PROD_WEBHOOK_SECRET }}"
+            echo "::add-mask::${{ secrets.PROD_DATABASE_URL }}"
+            echo "::add-mask::${{ secrets.PROD_R2_ACCESS_KEY }}"
+            echo "::add-mask::${{ secrets.PROD_R2_SECRET_KEY }}"
+
+            echo "BACKEND_API_KEY=${{ secrets.PROD_BACKEND_API_KEY }}" >> $GITHUB_ENV
+            echo "WEBHOOK_SECRET=${{ secrets.PROD_WEBHOOK_SECRET }}" >> $GITHUB_ENV
+            echo "DATABASE_URL=${{ secrets.PROD_DATABASE_URL }}" >> $GITHUB_ENV
+            echo "R2_ENDPOINT=${{ vars.PROD_R2_ENDPOINT }}" >> $GITHUB_ENV
+            echo "R2_ACCESS_KEY=${{ secrets.PROD_R2_ACCESS_KEY }}" >> $GITHUB_ENV
+            echo "R2_SECRET_KEY=${{ secrets.PROD_R2_SECRET_KEY }}" >> $GITHUB_ENV
+            echo "R2_BUCKET=${{ vars.PROD_R2_BUCKET }}" >> $GITHUB_ENV
+            echo "CORS_ORIGINS=${{ vars.PROD_CORS_ORIGINS }}" >> $GITHUB_ENV
+            echo "RAILWAY_SERVICE_ID=${{ secrets.PROD_RAILWAY_SERVICE_ID }}" >> $GITHUB_ENV
+          else
+            echo "::add-mask::${{ secrets.STAGING_BACKEND_API_KEY }}"
+            echo "::add-mask::${{ secrets.STAGING_WEBHOOK_SECRET }}"
+            echo "::add-mask::${{ secrets.STAGING_DATABASE_URL }}"
+            echo "::add-mask::${{ secrets.STAGING_R2_ACCESS_KEY }}"
+            echo "::add-mask::${{ secrets.STAGING_R2_SECRET_KEY }}"
+
+            echo "BACKEND_API_KEY=${{ secrets.STAGING_BACKEND_API_KEY }}" >> $GITHUB_ENV
+            echo "WEBHOOK_SECRET=${{ secrets.STAGING_WEBHOOK_SECRET }}" >> $GITHUB_ENV
+            echo "DATABASE_URL=${{ secrets.STAGING_DATABASE_URL }}" >> $GITHUB_ENV
+            echo "R2_ENDPOINT=${{ vars.STAGING_R2_ENDPOINT }}" >> $GITHUB_ENV
+            echo "R2_ACCESS_KEY=${{ secrets.STAGING_R2_ACCESS_KEY }}" >> $GITHUB_ENV
+            echo "R2_SECRET_KEY=${{ secrets.STAGING_R2_SECRET_KEY }}" >> $GITHUB_ENV
+            echo "R2_BUCKET=${{ vars.STAGING_R2_BUCKET }}" >> $GITHUB_ENV
+            echo "CORS_ORIGINS=${{ vars.STAGING_CORS_ORIGINS }}" >> $GITHUB_ENV
+            echo "RAILWAY_SERVICE_ID=${{ secrets.STAGING_RAILWAY_SERVICE_ID }}" >> $GITHUB_ENV
+          fi
+
+      - name: Validate deployment configuration
+        run: |
+          chmod +x ./scripts/deploy-check.sh
+          ./scripts/deploy-check.sh
+
+  test-backend:
+    name: Test Backend
+    runs-on: ubuntu-latest
+    needs: validate-environment
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        working-directory: ./backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-cov
+
+      - name: Run tests
+        working-directory: ./backend
+        env:
+          AUTH_DISABLED: "true"
+          ENVIRONMENT: "ci"
+        run: |
+          pytest -v --cov=app tests/
+
+  deploy-backend:
+    name: Deploy Backend to Railway
+    runs-on: ubuntu-latest
+    needs: [validate-environment, test-backend]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: |
+          curl -fsSL https://railway.app/install.sh | sh
+          echo "$HOME/.railway/bin" >> $GITHUB_PATH
+
+      - name: Set deployment environment
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ENVIRONMENT=${{ inputs.environment }}" >> $GITHUB_ENV
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "ENVIRONMENT=production" >> $GITHUB_ENV
+          else
+            echo "ENVIRONMENT=staging" >> $GITHUB_ENV
+          fi
+
+      - name: Deploy to Railway
+        run: |
+          # Load appropriate service ID
+          if [ "${{ env.ENVIRONMENT }}" = "production" ]; then
+            SERVICE_ID="${{ secrets.PROD_RAILWAY_SERVICE_ID }}"
+          else
+            SERVICE_ID="${{ secrets.STAGING_RAILWAY_SERVICE_ID }}"
+          fi
+
+          # Deploy with all required environment variables
+          cd backend
+          railway link $SERVICE_ID
+          railway up --detach
+
+      - name: Run database migrations
+        run: |
+          # Wait for deployment to stabilize
+          sleep 30
+
+          # Run migrations (assumes you have a migration command)
+          cd backend
+          railway run "alembic upgrade head"
+
+      - name: Health check
+        run: |
+          # Get the deployment URL
+          if [ "${{ env.ENVIRONMENT }}" = "production" ]; then
+            API_URL="${{ vars.PROD_API_URL }}"
+          else
+            API_URL="${{ vars.STAGING_API_URL }}"
+          fi
+
+          # Wait for service to be ready
+          echo "Waiting for service to be ready..."
+          for i in {1..30}; do
+            if curl -f "$API_URL/health" > /dev/null 2>&1; then
+              echo "Service is healthy!"
+              exit 0
+            fi
+            echo "Attempt $i: Service not ready yet..."
+            sleep 10
+          done
+
+          echo "Service failed to become healthy"
+          exit 1
+
+  notify-deployment:
+    name: Notify Deployment Status
+    runs-on: ubuntu-latest
+    needs: deploy-backend
+    if: always()
+    steps:
+      - name: Send notification
+        run: |
+          if [ "${{ needs.deploy-backend.result }}" = "success" ]; then
+            echo "✅ Backend deployed successfully to ${{ env.ENVIRONMENT }}"
+            # Add Slack/Discord notification here
+          else
+            echo "❌ Backend deployment failed"
+            # Add failure notification here
+          fi

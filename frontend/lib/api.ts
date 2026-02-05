@@ -55,17 +55,36 @@ export interface Reason {
   evidence: Record<string, unknown>;
 }
 
-export interface PresignedUrlResponse {
-  selfie_upload_url: string;
-  selfie_asset_key: string;
-  id_upload_url: string;
-  id_asset_key: string;
+export interface SimilarFaceMatch {
+  session_id: string;
+  created_at: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  source: "upload" | "synthetic";
+  attack_family?: string;
+  similarity_score: number;
+  distance: number;
+  decision?: "pass" | "review" | "fail";
+  risk_score?: number;
+}
+
+export interface SimilarFacesListResponse {
+  source_session_id: string;
+  threshold: number;
+  matches: SimilarFaceMatch[];
+  total_matches: number;
+}
+
+export interface PresignedUpload {
+  url: string;
+  fields: Record<string, string>;
+  asset_key: string;
   expires_in: number;
 }
 
 export interface SessionCreateResponse {
   session: Session;
-  upload_urls: PresignedUrlResponse;
+  selfie_upload: PresignedUpload;
+  id_upload: PresignedUpload;
 }
 
 export interface SessionListResponse {
@@ -195,7 +214,9 @@ export const api = {
     }),
 
   findSimilarSessions: (id: string, limit = 10) =>
-    fetchApi<Session[]>(`/api/sessions/${id}/similar?limit=${limit}`),
+    fetchApi<SimilarFacesListResponse>(
+      `/api/sessions/${id}/similar?limit=${limit}`
+    ),
 
   // Simulation
   listAttackFamilies: () =>
@@ -221,11 +242,53 @@ export const api = {
     fetchApi<ConfusionMatrixData>("/api/metrics/confusion-matrix"),
 };
 
-// Upload helper
+// Upload helpers
+
+// New POST-based upload with progress tracking
+export async function uploadToPresignedPost(
+  upload: PresignedUpload,
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const formData = new FormData();
+
+    // Fields MUST come before file (S3 requirement)
+    Object.entries(upload.fields).forEach(([key, value]) => {
+      formData.append(key, value);
+    });
+    formData.append('file', file);
+
+    const xhr = new XMLHttpRequest();
+
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+      } else {
+        reject(new Error(`Upload failed: ${xhr.status}`));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error('Network error during upload'));
+    xhr.open('POST', upload.url);
+    xhr.send(formData);
+  });
+}
+
+// Legacy PUT-based upload (deprecated)
 export async function uploadToPresignedUrl(
   url: string,
   file: File
 ): Promise<void> {
+  console.warn('uploadToPresignedUrl is deprecated. Use uploadToPresignedPost instead.');
   const res = await fetch(url, {
     method: "PUT",
     body: file,
@@ -238,6 +301,5 @@ export async function uploadToPresignedUrl(
     throw new Error(`Upload failed: ${res.status}`);
   }
 }
-
 
 

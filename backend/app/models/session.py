@@ -75,6 +75,15 @@ class KYCSession(Base):
     selfie_asset_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     id_asset_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
+    # Soft delete / retention fields
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deleted_reason: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    media_purged_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Face embedding for similarity search (pgvector)
     face_embedding: Mapped[Optional[list[float]]] = mapped_column(
         Vector(512), nullable=True
@@ -93,7 +102,6 @@ class KYCSession(Base):
 
     def __repr__(self) -> str:
         return f"<KYCSession(id={self.id}, status={self.status}, source={self.source})>"
-
 
 
 

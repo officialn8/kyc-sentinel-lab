@@ -10,18 +10,20 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import DbSession, Storage
 from app.api.security import rate_limiter, extract_client_ip
+from app.config import settings
 from app.models.session import KYCSession
 from app.services.geolocation import lookup_ip_country
 from app.models.result import KYCResult
 from app.services.job_queue import enqueue_process_session
 from app.services.processing import get_processing_backend
+from app.services.audit import log_audit_event
 from app.schemas.session import (
     SessionCreate,
     SessionResponse,
     SessionCreateResponse,
     SessionListResponse,
     SessionDetail,
-    PresignedUrlResponse,
+    PresignedUpload,
     SimilarFaceResponse,
     SimilarFacesListResponse,
 )
@@ -40,6 +42,15 @@ _CONTENT_TYPE_TO_EXT = {
     "video/webm": ".webm",
     # iOS often uses QuickTime for .mov uploads
     "video/quicktime": ".mov",
+}
+_EXT_TO_CONTENT_TYPE = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
 }
 
 
@@ -64,6 +75,37 @@ def _pick_extension(
     if guessed and guessed in allowlist:
         return guessed
     return ""
+
+
+def _normalize_content_type(content_type: str | None) -> str | None:
+    if not content_type:
+        return None
+    return content_type.lower().strip() or None
+
+
+def _canonical_content_type_for_ext(ext: str | None) -> str | None:
+    if not ext:
+        return None
+    return _EXT_TO_CONTENT_TYPE.get(ext)
+
+
+def _normalize_ext(ext: str | None) -> str | None:
+    if not ext:
+        return None
+    # Treat .jpeg and .jpg as equivalent
+    if ext == ".jpeg":
+        return ".jpg"
+    return ext
+
+
+def _get_request_id(request: Request | None) -> str | None:
+    if request is None:
+        return None
+    return (
+        request.headers.get("X-Request-ID")
+        or request.headers.get("X-Correlation-ID")
+        or request.headers.get("X-Trace-ID")
+    )
 
 
 @router.post(
@@ -126,14 +168,48 @@ async def create_session(
     if (data.id_filename or data.id_content_type) and not id_ext:
         raise HTTPException(status_code=400, detail="Unsupported ID document file type")
 
+    # Default to JPEG if no metadata provided (ensures safe Content-Type + extension)
+    if not selfie_ext:
+        selfie_ext = ".jpg"
+    if not id_ext:
+        id_ext = ".jpg"
+
+    # Canonical content types derived from allowlisted extensions
+    selfie_content_type = _canonical_content_type_for_ext(selfie_ext)
+    id_content_type = _canonical_content_type_for_ext(id_ext)
+    if not selfie_content_type:
+        raise HTTPException(status_code=400, detail="Unsupported selfie file type")
+    if not id_content_type:
+        raise HTTPException(status_code=400, detail="Unsupported ID document file type")
+
+    # Validate client-provided Content-Type matches the allowlisted extension
+    selfie_ct_client = _normalize_content_type(data.selfie_content_type)
+    if selfie_ct_client:
+        if selfie_ct_client not in _CONTENT_TYPE_TO_EXT:
+            raise HTTPException(status_code=400, detail="Unsupported selfie content type")
+        if _normalize_ext(_CONTENT_TYPE_TO_EXT[selfie_ct_client]) != _normalize_ext(selfie_ext):
+            raise HTTPException(status_code=400, detail="Selfie content type does not match file extension")
+
+    id_ct_client = _normalize_content_type(data.id_content_type)
+    if id_ct_client:
+        if id_ct_client not in _CONTENT_TYPE_TO_EXT:
+            raise HTTPException(status_code=400, detail="Unsupported ID document content type")
+        if _normalize_ext(_CONTENT_TYPE_TO_EXT[id_ct_client]) != _normalize_ext(id_ext):
+            raise HTTPException(status_code=400, detail="ID document content type does not match file extension")
+
     selfie_key = f"sessions/{session.id}/selfie{selfie_ext}"
     id_key = f"sessions/{session.id}/id{id_ext}"
 
-    selfie_url, selfie_expiry = await storage.generate_presigned_upload_url(
-        selfie_key, content_type=data.selfie_content_type
+    # Use POST uploads with size enforcement
+    selfie_upload = await storage.generate_presigned_post(
+        selfie_key,
+        content_type=selfie_content_type,
+        max_size_bytes=settings.max_upload_size_bytes
     )
-    id_url, id_expiry = await storage.generate_presigned_upload_url(
-        id_key, content_type=data.id_content_type
+    id_upload = await storage.generate_presigned_post(
+        id_key,
+        content_type=id_content_type,
+        max_size_bytes=settings.max_upload_size_bytes
     )
 
     # Store asset keys
@@ -143,14 +219,37 @@ async def create_session(
     await db.commit()
     await db.refresh(session)
 
+    await log_audit_event(
+        db,
+        event_type="session.created",
+        status="success",
+        session_id=str(session.id),
+        resource_type="session",
+        resource_id=str(session.id),
+        request_id=_get_request_id(request),
+        ip_address=client_ip,
+        user_agent=request.headers.get("User-Agent"),
+        metadata={
+            "source": session.source,
+            "attack_family": session.attack_family,
+            "attack_severity": session.attack_severity,
+        },
+        request=request,
+    )
+
     return SessionCreateResponse(
         session=SessionResponse.model_validate(session),
-        upload_urls=PresignedUrlResponse(
-            selfie_upload_url=selfie_url,
-            selfie_asset_key=selfie_key,
-            id_upload_url=id_url,
-            id_asset_key=id_key,
-            expires_in=selfie_expiry,
+        selfie_upload=PresignedUpload(
+            url=selfie_upload["url"],
+            fields=selfie_upload["fields"],
+            asset_key=selfie_key,
+            expires_in=settings.presigned_url_expiration,
+        ),
+        id_upload=PresignedUpload(
+            url=id_upload["url"],
+            fields=id_upload["fields"],
+            asset_key=id_key,
+            expires_in=settings.presigned_url_expiration,
         ),
     )
 
@@ -164,6 +263,7 @@ async def finalize_session(
     db: DbSession,
     background_tasks: BackgroundTasks,
     force: bool = False,
+    request: Request = None,
 ) -> dict:
     """Mark uploads complete and start processing.
 
@@ -171,8 +271,10 @@ async def finalize_session(
     Multiple concurrent finalize calls will serialize, ensuring only one wins.
 
     Args:
-        force: If True, allows restarting processing for stuck sessions.
+        force: If True, allows retrying failed sessions.
+               Processing sessions are only retried if they exceed the stuck timeout.
     """
+    from datetime import datetime, timedelta, timezone
     from sqlalchemy import select
 
     # IDEMPOTENCY: Use SELECT FOR UPDATE to prevent race conditions
@@ -188,15 +290,25 @@ async def finalize_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    # Detect potentially stuck processing using updated_at as a lightweight lease.
+    # This avoids infinite "processing" when a worker crashes or a task never starts.
+    now = datetime.now(timezone.utc)
+    stuck_cutoff = now - timedelta(seconds=settings.processing_stuck_timeout_seconds)
+    is_stuck_processing = (
+        session.status == "processing"
+        and session.updated_at is not None
+        and session.updated_at < stuck_cutoff
+    )
+
     # Check status AFTER acquiring lock to prevent TOCTOU race
     if session.status == "processing":
-        if force:
-            # Session is stuck, allow retry
+        if is_stuck_processing:
+            # Session appears stuck, allow retry
             pass
         else:
             raise HTTPException(
                 status_code=409,  # Conflict
-                detail="Session is already being processed. Use ?force=true to retry stuck sessions.",
+                detail="Session is already being processed. Retry after completion.",
             )
     elif session.status == "completed":
         # Already done - idempotent success
@@ -216,19 +328,42 @@ async def finalize_session(
     session.status = "processing"
     await db.flush()  # Ensure status is written before committing
 
-    # Import settings to determine processing mode
-    from app.config import settings
-
     if settings.use_worker:
         # Production: use durable job queue (requires separate worker service)
         await enqueue_process_session(db, str(session_id))
         await db.commit()  # Releases the row lock
+        await log_audit_event(
+            db,
+            event_type="session.processing_started",
+            status="queued",
+            session_id=str(session.id),
+            resource_type="session",
+            resource_id=str(session.id),
+            request_id=_get_request_id(request),
+            ip_address=extract_client_ip(request) if request else None,
+            user_agent=request.headers.get("User-Agent") if request else None,
+            metadata={"mode": "worker", "force": force, "stuck_retry": is_stuck_processing},
+            request=request,
+        )
         return {"status": "processing", "message": "Session queued for worker processing"}
     else:
         # Development: process directly via background task (no worker needed)
         await db.commit()  # Releases the row lock
         backend = get_processing_backend()
         background_tasks.add_task(backend.process_session, str(session_id))
+        await log_audit_event(
+            db,
+            event_type="session.processing_started",
+            status="processing",
+            session_id=str(session.id),
+            resource_type="session",
+            resource_id=str(session.id),
+            request_id=_get_request_id(request),
+            ip_address=extract_client_ip(request) if request else None,
+            user_agent=request.headers.get("User-Agent") if request else None,
+            metadata={"mode": "background_task", "force": force, "stuck_retry": is_stuck_processing},
+            request=request,
+        )
         return {"status": "processing", "message": "Session processing started"}
 
 
@@ -242,10 +377,15 @@ async def list_sessions(
     attack_family: Optional[str] = Query(default=None),
     decision: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None, description="Search by session ID, attack family, or status"),
+    include_deleted: bool = Query(default=False),
 ) -> SessionListResponse:
     """List sessions with filters, search, and pagination."""
     # Build query
     query = select(KYCSession)
+
+    # Exclude soft-deleted sessions by default
+    if not include_deleted:
+        query = query.where(KYCSession.deleted_at.is_(None))
 
     # Text search across multiple fields
     # PERFORMANCE: Uses ILIKE which triggers GIN trigram indexes (ix_kyc_sessions_*_gin)
@@ -308,6 +448,7 @@ async def get_session(
     session_id: UUID,
     db: DbSession,
     storage: Storage,
+    include_deleted: bool = Query(default=False),
 ) -> SessionDetail:
     """Get full session details with results and reasons."""
     query = (
@@ -323,6 +464,8 @@ async def get_session(
     session = result.scalar_one_or_none()
 
     if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.deleted_at and not include_deleted:
         raise HTTPException(status_code=404, detail="Session not found")
 
     # Generate presigned download URLs for media
@@ -378,24 +521,109 @@ async def delete_session(
     session_id: UUID,
     db: DbSession,
     storage: Storage,
+    request: Request,
+    reason: Optional[str] = Query(default=None, max_length=200),
 ) -> dict:
-    """Delete a session and its associated data."""
+    """Soft-delete a session for operational removal (data retained)."""
     session = await db.get(KYCSession, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    if session.deleted_at:
+        raise HTTPException(status_code=404, detail="Session not found")
 
-    # Delete assets from storage
-    if session.selfie_asset_key:
-        await storage.delete_object(session.selfie_asset_key)
-    if session.id_asset_key:
-        await storage.delete_object(session.id_asset_key)
+    if session.deleted_at:
+        return {"status": "deleted", "id": str(session_id)}
 
-    # Delete session (cascades to result, reasons, frame_metrics)
-    await db.delete(session)
+    from datetime import datetime, timezone
+
+    session.deleted_at = datetime.now(timezone.utc)
+    session.deleted_reason = reason or "operational_delete"
     await db.commit()
+
+    await log_audit_event(
+        db,
+        event_type="session.deleted",
+        status="success",
+        session_id=str(session.id),
+        resource_type="session",
+        resource_id=str(session.id),
+        request_id=_get_request_id(request),
+        ip_address=extract_client_ip(request),
+        user_agent=request.headers.get("User-Agent"),
+        metadata={"reason": session.deleted_reason},
+        request=request,
+    )
 
     return {"status": "deleted", "id": str(session_id)}
 
+
+@router.post(
+    "/{session_id}/erase",
+    dependencies=[Depends(rate_limiter(limit=10, window_seconds=60))],
+)
+async def erase_session(
+    session_id: UUID,
+    db: DbSession,
+    storage: Storage,
+    request: Request,
+    reason: str = Query(..., min_length=3, max_length=200),
+) -> dict:
+    """GDPR erasure: hard delete all data and assets with audit logging."""
+    from sqlalchemy import select
+
+    query = (
+        select(KYCSession)
+        .where(KYCSession.id == session_id)
+        .with_for_update(nowait=False)
+    )
+    result = await db.execute(query)
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    await log_audit_event(
+        db,
+        event_type="session.erasure_requested",
+        status="requested",
+        session_id=str(session.id),
+        resource_type="session",
+        resource_id=str(session.id),
+        request_id=_get_request_id(request),
+        ip_address=extract_client_ip(request),
+        user_agent=request.headers.get("User-Agent"),
+        metadata={"reason": reason},
+        request=request,
+    )
+
+    # Delete all stored assets for this session
+    deleted_objects = 0
+    deleted_objects += await storage.delete_prefix(f"sessions/{session_id}/")
+    deleted_objects += await storage.delete_prefix(f"crops/{session_id}/")
+
+    # Delete session and related records (cascade)
+    await db.delete(session)
+    await db.commit()
+
+    await log_audit_event(
+        db,
+        event_type="session.erasure_completed",
+        status="success",
+        session_id=str(session_id),
+        resource_type="session",
+        resource_id=str(session_id),
+        request_id=_get_request_id(request),
+        ip_address=extract_client_ip(request),
+        user_agent=request.headers.get("User-Agent"),
+        metadata={
+            "reason": reason,
+            "deleted_prefixes": [f"sessions/{session_id}/", f"crops/{session_id}/"],
+            "deleted_objects": deleted_objects,
+        },
+        request=request,
+    )
+
+    return {"status": "erased", "id": str(session_id), "deleted_objects": deleted_objects}
 
 @router.get("/{session_id}/similar", response_model=SimilarFacesListResponse)
 async def find_similar_sessions(
@@ -450,6 +678,7 @@ async def find_similar_sessions(
         .options(selectinload(KYCSession.result))  # Eager load results
         .where(KYCSession.id != session_id)
         .where(KYCSession.face_embedding.isnot(None))
+        .where(KYCSession.deleted_at.is_(None))
         .where(distance_expr < max_distance)  # Filter by threshold
         .order_by(distance_expr)
         .limit(limit)
@@ -492,6 +721,3 @@ async def find_similar_sessions(
         matches=matches,
         total_matches=len(matches),
     )
-
-
-

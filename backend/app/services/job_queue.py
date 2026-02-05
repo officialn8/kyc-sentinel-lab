@@ -2,12 +2,42 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.job import KYCJob
 
 
+def _is_job_stale(job: KYCJob) -> bool:
+    """Detect jobs stuck in processing beyond the configured timeout."""
+    if job.status != "processing" or job.updated_at is None:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        seconds=settings.processing_stuck_timeout_seconds
+    )
+    return job.updated_at < cutoff
+
+
 async def enqueue_process_session(db: AsyncSession, session_id: str) -> KYCJob:
+    existing = await db.scalar(
+        select(KYCJob)
+        .where(
+            KYCJob.session_id == session_id,
+            KYCJob.job_type == "process_session",
+            KYCJob.status.in_(("pending", "processing")),
+        )
+        .limit(1)
+    )
+    if existing:
+        if _is_job_stale(existing):
+            existing.status = "failed"
+            existing.last_error = "Stuck processing timeout"
+        else:
+            return existing
+
     job = KYCJob(session_id=session_id, job_type="process_session", status="pending")
     db.add(job)
     return job
@@ -20,6 +50,22 @@ async def enqueue_generate_synthetic_session(
     attack_family: str,
     attack_severity: str,
 ) -> KYCJob:
+    existing = await db.scalar(
+        select(KYCJob)
+        .where(
+            KYCJob.session_id == session_id,
+            KYCJob.job_type == "generate_synthetic_session",
+            KYCJob.status.in_(("pending", "processing")),
+        )
+        .limit(1)
+    )
+    if existing:
+        if _is_job_stale(existing):
+            existing.status = "failed"
+            existing.last_error = "Stuck processing timeout"
+        else:
+            return existing
+
     job = KYCJob(
         session_id=session_id,
         job_type="generate_synthetic_session",
@@ -29,5 +75,4 @@ async def enqueue_generate_synthetic_session(
     )
     db.add(job)
     return job
-
 

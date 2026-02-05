@@ -46,15 +46,14 @@ class KYCResult(Base):
     )  # 0-1 (higher = more suspicious)
 
     # Versioning
-    model_version: Mapped[str] = mapped_column(String(20), default="v1")
-    rules_version: Mapped[str] = mapped_column(String(20), default="v1")
+    model_version: Mapped[str] = mapped_column(String(128), default="v1")
+    rules_version: Mapped[str] = mapped_column(String(128), default="v1")
 
     # Relationship
     session: Mapped["KYCSession"] = relationship(back_populates="result")
 
     def __repr__(self) -> str:
         return f"<KYCResult(id={self.id}, risk_score={self.risk_score}, decision={self.decision})>"
-
 
 
 

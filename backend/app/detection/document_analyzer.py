@@ -172,7 +172,7 @@ class DocumentAnalyzer:
     def __init__(
         self,
         lang: str = "en",
-        use_gpu: bool = True,
+        use_gpu: bool = False,
         min_confidence_threshold: float = 0.7,
         low_confidence_threshold: float = 0.5,
     ) -> None:
@@ -1554,5 +1554,6 @@ def get_document_analyzer() -> DocumentAnalyzer:
     """Get cached document analyzer instance."""
     global _doc_analyzer
     if _doc_analyzer is None:
-        _doc_analyzer = DocumentAnalyzer()
+        from app.config import settings
+        _doc_analyzer = DocumentAnalyzer(use_gpu=settings.ocr_use_gpu)
     return _doc_analyzer

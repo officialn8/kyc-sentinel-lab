@@ -4,9 +4,18 @@ from pathlib import Path
 from functools import lru_cache
 import json
 from typing import Literal
+from enum import Enum
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Environment(str, Enum):
+    """Application environment types."""
+    LOCAL = "local"
+    CI = "ci"
+    STAGING = "staging"
+    PRODUCTION = "production"
 
 
 class Settings(BaseSettings):
@@ -27,6 +36,7 @@ class Settings(BaseSettings):
 
     # Application
     app_name: str = "KYC Sentinel Lab"
+    environment: Environment = Environment.LOCAL
     debug: bool = False
     log_level: str = "INFO"
 
@@ -34,7 +44,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/kyc_sentinel"
 
     # R2/S3 Storage
-    r2_endpoint: str = "http://localhost:9000"  # MinIO for local dev
+    r2_endpoint: str = "http://127.0.0.1:9000"  # MinIO for local dev
     r2_access_key: str = "minioadmin"
     r2_secret_key: str = "minioadmin"
     r2_bucket: str = "kyc-sentinel-media"
@@ -47,6 +57,9 @@ class Settings(BaseSettings):
     # Set to true in production to use durable job queue (requires separate worker service)
     # Set to false in development for direct background processing
     use_worker: bool = False
+    # Processing reliability: consider a job/session "stuck" after this many seconds
+    # Used by worker reaper and finalize retry logic
+    processing_stuck_timeout_seconds: int = 15 * 60
 
     # Scoring configuration
     # Available profiles: default, fintech_high_risk, crypto_exchange, social_verification
@@ -71,6 +84,22 @@ class Settings(BaseSettings):
     # Maximum upload file size (bytes) - enforced in presigned URL conditions
     # Default: 50MB for images/videos
     max_upload_size_bytes: int = 50 * 1024 * 1024
+
+    # Audit logging
+    audit_log_prefix: str = "audit"
+
+    # Data retention defaults
+    retention_media_days: int = 30
+    retention_metadata_days: int = 90
+
+    # Fraud ring detection (advisory)
+    fraud_ring_similarity_threshold: float = 0.80
+    fraud_ring_min_matches: int = 2
+
+    # Local ML hardware toggles (safe defaults for laptops)
+    # Set to True only if you have GPU-enabled builds installed.
+    face_use_gpu: bool = False
+    ocr_use_gpu: bool = False
 
     # Optional shared secret to protect backend endpoints when running publicly.
     backend_api_key: str = ""
@@ -102,34 +131,62 @@ class Settings(BaseSettings):
     # Format: redis://[[username]:[password]@]host[:port][/database]
     redis_url: str = ""
 
+    # Webhook signing secret for HMAC signatures
+    # Required in production for secure webhook delivery
+    webhook_secret: str = ""
+
     @model_validator(mode="after")
-    def _validate_auth_config(self) -> "Settings":
+    def _validate_production_config(self) -> "Settings":
         """
-        SECURITY: Fail fast at startup if auth is misconfigured.
+        SECURITY: Fail fast at startup if production config is invalid.
 
-        Either:
-        1. AUTH_DISABLED=true (explicit opt-out, dev/testing only)
-        2. At least one auth method configured (API key or Basic Auth)
-
-        This prevents accidental deployment of an open API.
+        Production and staging environments require:
+        - Authentication configured
+        - Webhook secret configured
+        - Debug mode disabled
+        - Auth cannot be disabled
         """
-        if self.auth_disabled:
-            return self
+        if self.environment in (Environment.STAGING, Environment.PRODUCTION):
+            errors = []
 
+            # Auth must not be disabled
+            if self.auth_disabled:
+                errors.append("AUTH_DISABLED=true forbidden in production")
+
+            # Check for valid authentication
+            if not self._has_valid_auth():
+                errors.append("No authentication configured")
+
+            # Webhook secret required
+            if not self.webhook_secret:
+                errors.append("WEBHOOK_SECRET required for production")
+
+            # Debug must be off
+            if self.debug:
+                errors.append("DEBUG=true forbidden in production")
+
+            if errors:
+                raise ValueError(f"Production config errors: {'; '.join(errors)}")
+
+        # For non-production environments, still validate auth if not explicitly disabled
+        elif not self.auth_disabled:
+            if not self._has_valid_auth():
+                raise ValueError(
+                    "SECURITY: No authentication configured. "
+                    "Set BACKEND_API_KEY or BASIC_AUTH_USERNAME+BASIC_AUTH_PASSWORD, "
+                    "or explicitly set AUTH_DISABLED=true for development/testing."
+                )
+
+        return self
+
+    def _has_valid_auth(self) -> bool:
+        """Check if at least one auth method is configured."""
         has_api_key = bool((self.backend_api_key or "").strip())
         has_basic = bool(
             (self.basic_auth_username or "").strip()
             and (self.basic_auth_password or "").strip()
         )
-
-        if not has_api_key and not has_basic:
-            raise ValueError(
-                "SECURITY: No authentication configured. "
-                "Set BACKEND_API_KEY or BASIC_AUTH_USERNAME+BASIC_AUTH_PASSWORD, "
-                "or explicitly set AUTH_DISABLED=true for development/testing."
-            )
-
-        return self
+        return has_api_key or has_basic
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -176,6 +233,3 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
-
-
-

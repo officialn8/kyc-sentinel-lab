@@ -153,12 +153,19 @@ class FaceAnalyzer:
         """Ensure the InsightFace model is loaded (lazy initialization)."""
         if self._app is None:
             from insightface.app import FaceAnalysis
+            from app.config import settings
             
+            providers = ["CPUExecutionProvider"]
+            ctx_id = -1
+            if settings.face_use_gpu:
+                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                ctx_id = 0
+
             self._app = FaceAnalysis(
                 name=self.model_pack,
-                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+                providers=providers,
             )
-            self._app.prepare(ctx_id=0, det_size=self.det_size)
+            self._app.prepare(ctx_id=ctx_id, det_size=self.det_size)
 
     def analyze(
         self, selfie_image: np.ndarray, id_image: np.ndarray

@@ -57,6 +57,7 @@ class ReasonCode(str, Enum):
     FRAUD_HIGH_VELOCITY = "FRAUD_HIGH_VELOCITY"
     FRAUD_GEO_MISMATCH = "FRAUD_GEO_MISMATCH"
     FRAUD_SIMILAR_FACE = "FRAUD_SIMILAR_FACE"
+    FRAUD_RING_LINKED = "FRAUD_RING_LINKED"
 
 
 REASON_MESSAGES: dict[ReasonCode, str] = {
@@ -111,6 +112,7 @@ REASON_MESSAGES: dict[ReasonCode, str] = {
     ReasonCode.FRAUD_HIGH_VELOCITY: "High submission velocity detected ({submissions} in {period})",
     ReasonCode.FRAUD_GEO_MISMATCH: "Document country ({doc_country}) differs from device location ({device_country})",
     ReasonCode.FRAUD_SIMILAR_FACE: "Similar face found in {similar_count} other sessions",
+    ReasonCode.FRAUD_RING_LINKED: "Session linked to potential fraud ring (matches: {match_count}, max similarity: {max_similarity})",
 }
 
 
@@ -165,6 +167,7 @@ def get_reason_severity(code: ReasonCode) -> str:
         ReasonCode.FRAUD_HIGH_VELOCITY,  # May be legitimate multiple attempts
         ReasonCode.FRAUD_GEO_MISMATCH,  # Could be VPN or travel
         ReasonCode.FRAUD_SIMILAR_FACE,  # Could be same person legitimate retry
+        ReasonCode.FRAUD_RING_LINKED,  # Advisory signal for ring linkage
     }
 
     if code in high_severity:
@@ -173,7 +176,6 @@ def get_reason_severity(code: ReasonCode) -> str:
         return "warn"
     else:
         return "info"
-
 
 
 

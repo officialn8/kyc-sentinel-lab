@@ -48,8 +48,17 @@ class SessionCreate(BaseModel):
     id_content_type: Optional[str] = None
 
 
+class PresignedUpload(BaseModel):
+    """Presigned POST upload configuration."""
+
+    url: str
+    fields: dict[str, str]
+    asset_key: str
+    expires_in: int
+
+
 class PresignedUrlResponse(BaseModel):
-    """Presigned URL response for uploading assets."""
+    """Presigned URL response for uploading assets (deprecated)."""
 
     selfie_upload_url: str
     selfie_asset_key: str
@@ -78,7 +87,8 @@ class SessionCreateResponse(BaseModel):
     """Response when creating a new session."""
 
     session: SessionResponse
-    upload_urls: PresignedUrlResponse
+    selfie_upload: PresignedUpload
+    id_upload: PresignedUpload
 
 
 class SessionListResponse(BaseModel):

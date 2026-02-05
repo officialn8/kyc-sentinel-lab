@@ -2,6 +2,7 @@
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
+import logging
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,12 +11,15 @@ from app.config import settings
 from app.api import sessions, upload, simulate, metrics, websocket, webhooks
 from app.api.security import require_auth
 
+logger = logging.getLogger("uvicorn.error")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler for startup/shutdown events."""
     # Startup
     # Note: Database tables are managed by Alembic migrations
+    logger.info("Storage endpoint configured: %s", settings.r2_endpoint)
     yield
     # Shutdown
     # Add cleanup logic here if needed
