@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
+import { ClerkProvider } from "@clerk/nextjs";
 import { Analytics } from "@vercel/analytics/react";
 import "./globals.css";
 import { Providers } from "./providers";
@@ -29,25 +30,25 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning>
-      <body className={`${inter.className} min-h-screen antialiased`}>
-        <Providers>
-          <ConnectionStatus />
-          <div className="flex min-h-screen">
-            <Sidebar />
-            <div className="flex flex-1 flex-col min-h-screen">
-              <Navbar />
-              <main className="flex-1 overflow-y-auto gradient-mesh relative">
-                <div className="container py-4 md:py-6 pb-20 lg:pb-6 relative z-10">{children}</div>
-              </main>
+    <ClerkProvider>
+      <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning>
+        <body className={`${inter.className} min-h-screen antialiased`}>
+          <Providers>
+            <ConnectionStatus />
+            <div className="flex min-h-screen">
+              <Sidebar />
+              <div className="flex flex-1 flex-col min-h-screen">
+                <Navbar />
+                <main className="flex-1 overflow-y-auto gradient-mesh relative">
+                  <div className="container py-4 md:py-6 pb-20 lg:pb-6 relative z-10">{children}</div>
+                </main>
+              </div>
             </div>
-          </div>
-        </Providers>
-        <Analytics />
-      </body>
-    </html>
+          </Providers>
+          <Analytics />
+        </body>
+      </html>
+    </ClerkProvider>
   );
 }
-
-
 

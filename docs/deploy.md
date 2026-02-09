@@ -16,6 +16,8 @@ Use [`env.example`](../env.example) as the source of truth.
 
 - `NEXT_PUBLIC_API_URL`: your Railway backend base URL (example: `https://kyc-api-production.up.railway.app`)
 - `BACKEND_API_KEY` (optional but recommended): shared secret used by the Next.js server-side proxy route to call the backend without exposing the secret to the browser.
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`: Clerk publishable key.
+- `CLERK_SECRET_KEY`: Clerk secret key for middleware and server-side auth checks.
 - `NEXT_PUBLIC_R2_PUBLIC_HOSTNAME` (optional): if you use a custom domain for R2 assets, set the hostname (example: `media.example.com`).
 
 ### Railway (Backend API)
@@ -27,6 +29,8 @@ Use [`env.example`](../env.example) as the source of truth.
 - `R2_ENDPOINT`, `R2_ACCESS_KEY`, `R2_SECRET_KEY`, `R2_BUCKET`
 - `USE_MODAL=true`
 - `BACKEND_API_KEY` (optional): if set, backend endpoints require `X-API-Key: <value>`
+- `WEBHOOK_SECRET`: required for outbound webhook signatures
+- `UPLOAD_TICKET_SECRET`: required for signed upload ticket validation
 
 ## 2) Railway Postgres: enable pgvector and run migrations
 
@@ -91,5 +95,4 @@ modal deploy backend/modal_app.py
 ## 5) Recommended: enable backend auth safely
 
 If you set `BACKEND_API_KEY` on Railway, the browser should not call Railway directly. Instead, call the Next.js `/api/*` proxy route which injects the key server-side.
-
 

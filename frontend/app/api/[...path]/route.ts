@@ -1,6 +1,56 @@
-import { NextRequest } from "next/server";
+import { auth } from "@clerk/nextjs/server";
+import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const METRICS_ENDPOINTS = new Set([
+  "summary",
+  "by-attack-family",
+  "confusion-matrix",
+]);
+
+function isAllowedProxyRoute(method: string, pathParts: string[]): boolean {
+  const [root, second, third] = pathParts;
+
+  if (root === "sessions") {
+    if (pathParts.length === 1) {
+      return method === "GET" || method === "POST";
+    }
+
+    if (!second || !UUID_RE.test(second)) {
+      return false;
+    }
+
+    if (pathParts.length === 2) {
+      return method === "GET" || method === "DELETE";
+    }
+
+    if (pathParts.length === 3 && third === "finalize") {
+      return method === "POST";
+    }
+
+    if (pathParts.length === 3 && third === "similar") {
+      return method === "GET";
+    }
+
+    return false;
+  }
+
+  if (root === "simulate") {
+    if (pathParts.length === 1) {
+      return method === "POST";
+    }
+    return pathParts.length === 2 && second === "families" && method === "GET";
+  }
+
+  if (root === "metrics") {
+    return pathParts.length === 2 && !!second && METRICS_ENDPOINTS.has(second) && method === "GET";
+  }
+
+  return false;
+}
 
 function getBackendBaseUrl() {
   return (
@@ -11,6 +61,16 @@ function getBackendBaseUrl() {
 }
 
 async function proxy(req: NextRequest, pathParts: string[]) {
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ detail: "Authentication required" }, { status: 401 });
+  }
+
+  const method = req.method.toUpperCase();
+  if (!isAllowedProxyRoute(method, pathParts)) {
+    return NextResponse.json({ detail: "Forbidden proxy route" }, { status: 403 });
+  }
+
   const backendBase = getBackendBaseUrl().replace(/\/+$/, "");
 
   const incomingUrl = new URL(req.url);
@@ -18,13 +78,17 @@ async function proxy(req: NextRequest, pathParts: string[]) {
 
   const headers = new Headers(req.headers);
   headers.delete("host");
+  headers.delete("authorization");
+  headers.delete("x-api-key");
+  headers.delete("cookie");
+  headers.delete("x-forwarded-for");
+  headers.delete("x-real-ip");
 
   const apiKey = process.env.BACKEND_API_KEY;
   if (apiKey) {
     headers.set("X-API-Key", apiKey);
   }
-
-  const method = req.method.toUpperCase();
+  headers.set("X-Authenticated-User-Id", userId);
 
   // Forward body for non-GET/HEAD requests
   const body =
@@ -82,5 +146,4 @@ export async function DELETE(req: NextRequest, { params }: RouteContext) {
   const { path } = await params;
   return proxy(req, path);
 }
-
 

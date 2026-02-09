@@ -74,20 +74,40 @@ async def _get_or_create_chain(
     if chain:
         return chain
 
-    chain = AuditChain(chain_date=chain_date, last_hash=GENESIS_HASH)
-    db.add(chain)
     try:
-        await db.flush()
-        return chain
+        async with db.begin_nested():
+            chain = AuditChain(chain_date=chain_date, last_hash=GENESIS_HASH)
+            db.add(chain)
+            await db.flush()
+            return chain
     except IntegrityError:
-        await db.rollback()
         chain = await db.scalar(stmt)
         if chain:
             return chain
         raise
 
 
-async def log_audit_event(
+def _build_archive_payload(event: AuditEvent) -> dict:
+    return {
+        "event_type": event.event_type,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+        "status": event.status,
+        "actor_type": event.actor_type,
+        "actor_id": event.actor_id,
+        "session_id": str(event.session_id) if event.session_id else None,
+        "resource_type": event.resource_type,
+        "resource_id": event.resource_id,
+        "request_id": event.request_id,
+        "ip_address": event.ip_address,
+        "user_agent": event.user_agent,
+        "metadata": event.event_metadata or {},
+        "prev_hash": event.prev_hash,
+        "event_id": str(event.id),
+        "event_hash": event.event_hash,
+    }
+
+
+async def append_audit_event(
     db: AsyncSession,
     *,
     event_type: str,
@@ -100,9 +120,10 @@ async def log_audit_event(
     ip_address: Optional[str] = None,
     user_agent: Optional[str] = None,
     metadata: Optional[dict] = None,
+    commit: bool = True,
     request=None,
 ) -> AuditEvent:
-    """Create a hash-chained audit event and archive to R2."""
+    """Append a hash-chained audit event to the database."""
     created_at = datetime.now(timezone.utc)
     actor = actor or _extract_actor_from_request(request)
     metadata = metadata or {}
@@ -151,28 +172,85 @@ async def log_audit_event(
     db.add(event)
     chain.last_hash = event_hash
 
-    await db.commit()
-    await db.refresh(event)
+    await db.flush()
+    if commit:
+        await db.commit()
+        await db.refresh(event)
+
+    return event
+
+
+async def archive_audit_event(
+    db: AsyncSession,
+    event: AuditEvent | str | uuid.UUID,
+    *,
+    commit: bool = True,
+) -> None:
+    """Archive an audit event to object storage."""
+    if isinstance(event, (str, uuid.UUID)):
+        event_obj = await db.get(AuditEvent, uuid.UUID(str(event)))
+    else:
+        event_obj = event
+
+    if not event_obj:
+        return
 
     try:
         storage = get_storage_service()
-        archive_payload = {
-            **payload_for_hash,
-            "event_id": str(event.id),
-            "event_hash": event_hash,
-        }
-        archive_key = _archive_key(event, created_at)
+        archive_payload = _build_archive_payload(event_obj)
+        archive_key = _archive_key(
+            event_obj,
+            event_obj.created_at or datetime.now(timezone.utc),
+        )
         await storage.upload_file(
             archive_key,
             json.dumps(archive_payload, sort_keys=True).encode("utf-8"),
             "application/json",
         )
-        event.archived_at = datetime.now(timezone.utc)
-        event.archive_error = None
-        await db.commit()
+        event_obj.archived_at = datetime.now(timezone.utc)
+        event_obj.archive_error = None
+        await db.flush()
+        if commit:
+            await db.commit()
     except Exception as e:
-        event.archive_error = str(e)[:500]
-        await db.commit()
-        logger.error("Audit archive failed for %s: %s", event.id, e)
+        event_obj.archive_error = str(e)[:500]
+        await db.flush()
+        if commit:
+            await db.commit()
+        logger.error("Audit archive failed for %s: %s", event_obj.id, e)
+
+
+async def log_audit_event(
+    db: AsyncSession,
+    *,
+    event_type: str,
+    status: Optional[str] = None,
+    actor: Optional[AuditActor] = None,
+    session_id: Optional[str] = None,
+    resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    request=None,
+) -> AuditEvent:
+    """Create a hash-chained audit event and archive to R2."""
+    event = await append_audit_event(
+        db,
+        event_type=event_type,
+        status=status,
+        actor=actor,
+        session_id=session_id,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        request_id=request_id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        metadata=metadata,
+        commit=True,
+        request=request,
+    )
+    await archive_audit_event(db, event, commit=True)
 
     return event

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from functools import lru_cache
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 import aioboto3
 from botocore.config import Config
@@ -302,9 +302,23 @@ class StorageService:
         Raises:
             ClientError: If object doesn't exist or access denied
         """
+        metadata = await self.get_object_metadata(key)
+        return metadata["content_length"]
+
+    async def get_object_metadata(self, key: str) -> dict[str, Any]:
+        """Get object metadata from storage.
+
+        Returns:
+            Dictionary with content_length, content_type, etag, last_modified.
+        """
         client = await self._get_client()
         response = await client.head_object(Bucket=self.bucket, Key=key)
-        return response["ContentLength"]
+        return {
+            "content_length": int(response.get("ContentLength", 0)),
+            "content_type": response.get("ContentType"),
+            "etag": response.get("ETag"),
+            "last_modified": response.get("LastModified"),
+        }
 
     async def object_exists(self, key: str) -> bool:
         """Check if an object exists in storage."""

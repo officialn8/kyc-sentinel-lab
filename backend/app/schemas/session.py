@@ -44,8 +44,10 @@ class SessionCreate(BaseModel):
     # with Content-Type constraints.
     selfie_filename: Optional[str] = None
     selfie_content_type: Optional[str] = None
+    selfie_size_bytes: Optional[int] = Field(default=None, ge=1)
     id_filename: Optional[str] = None
     id_content_type: Optional[str] = None
+    id_size_bytes: Optional[int] = Field(default=None, ge=1)
 
 
 class PresignedUpload(BaseModel):
@@ -57,6 +59,14 @@ class PresignedUpload(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     asset_key: str
     expires_in: int
+    ticket: Optional[str] = None
+
+
+class FinalizeSessionRequest(BaseModel):
+    """Optional upload tickets used for finalize-time validation."""
+
+    selfie_ticket: Optional[str] = None
+    id_ticket: Optional[str] = None
 
 
 class PresignedUrlResponse(BaseModel):
@@ -178,5 +188,4 @@ class SimilarFacesListResponse(BaseModel):
     threshold: float
     matches: list[SimilarFaceResponse]
     total_matches: int
-
 

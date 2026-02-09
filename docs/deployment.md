@@ -38,6 +38,8 @@ Set env vars (minimum):
 - `DATABASE_URL` (from Railway Postgres)
 - `R2_ENDPOINT`, `R2_ACCESS_KEY`, `R2_SECRET_KEY`, `R2_BUCKET`
 - `CORS_ORIGINS=https://YOUR_VERCEL_DOMAIN`
+- `WEBHOOK_SECRET=...`
+- `UPLOAD_TICKET_SECRET=...`
 - `USE_MODAL=true`
 
 Start command (recommended):
@@ -57,8 +59,9 @@ Set env vars:
 - `NEXT_PUBLIC_API_URL=https://YOUR_RAILWAY_API_DOMAIN` (no trailing slash)
 - `BACKEND_API_URL=https://YOUR_RAILWAY_API_DOMAIN` (server-only)
 - `BACKEND_API_KEY=...` (server-only, must match Railway backend `BACKEND_API_KEY` if you enable it)
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=...`
+- `CLERK_SECRET_KEY=...`
 - Optional: `NEXT_PUBLIC_R2_PUBLIC_HOSTNAME=media.yourdomain.com`
 
 The frontend calls same-origin `/api/*`; `frontend/app/api/[...path]/route.ts` proxies to Railway and can inject `BACKEND_API_KEY` safely.
-
 

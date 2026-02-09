@@ -32,6 +32,8 @@ class Settings(BaseSettings):
         ),
         env_file_encoding="utf-8",
         case_sensitive=False,
+        # Allow shared/root env files to contain frontend-only vars (e.g., Clerk).
+        extra="ignore",
     )
 
     # Application
@@ -141,6 +143,10 @@ class Settings(BaseSettings):
     # Required in production for secure webhook delivery
     webhook_secret: str = ""
 
+    # Secret used to sign upload validation tickets.
+    # Required in production to prevent client-side tampering of upload metadata.
+    upload_ticket_secret: str = ""
+
     @model_validator(mode="after")
     def _validate_production_config(self) -> "Settings":
         """
@@ -166,6 +172,10 @@ class Settings(BaseSettings):
             # Webhook secret required
             if not self.webhook_secret:
                 errors.append("WEBHOOK_SECRET required for production")
+
+            # Upload ticket secret required
+            if not self.upload_ticket_secret:
+                errors.append("UPLOAD_TICKET_SECRET required for production")
 
             # Debug must be off
             if self.debug:

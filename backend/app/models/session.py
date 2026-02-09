@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import String, Float, DateTime, func
+from sqlalchemy import String, Float, DateTime, BigInteger, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -74,6 +74,15 @@ class KYCSession(Base):
     # Asset references (R2 keys)
     selfie_asset_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     id_asset_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    selfie_expected_size_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    id_expected_size_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    selfie_expected_content_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    id_expected_content_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    selfie_upload_ticket_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    id_upload_ticket_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    upload_ticket_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Soft delete / retention fields
     deleted_at: Mapped[Optional[datetime]] = mapped_column(
@@ -102,7 +111,6 @@ class KYCSession(Base):
 
     def __repr__(self) -> str:
         return f"<KYCSession(id={self.id}, status={self.status}, source={self.source})>"
-
 
 
 

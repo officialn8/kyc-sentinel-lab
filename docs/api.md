@@ -18,7 +18,13 @@ Content-Type: application/json
   "attack_severity": null,
   "device_os": "iOS 17.2",
   "device_model": "iPhone 15 Pro",
-  "ip_country": "US"
+  "ip_country": "US",
+  "selfie_filename": "selfie.jpg",
+  "selfie_content_type": "image/jpeg",
+  "selfie_size_bytes": 532112,
+  "id_filename": "id-front.jpg",
+  "id_content_type": "image/jpeg",
+  "id_size_bytes": 804221
 }
 ```
 
@@ -35,12 +41,27 @@ Content-Type: application/json
     "attack_family": null,
     "attack_severity": null
   },
-  "upload_urls": {
-    "selfie_upload_url": "https://...",
-    "selfie_asset_key": "sessions/550e.../selfie",
-    "id_upload_url": "https://...",
-    "id_asset_key": "sessions/550e.../id",
-    "expires_in": 3600
+  "selfie_upload": {
+    "method": "PUT",
+    "url": "https://...",
+    "fields": {},
+    "headers": {
+      "Content-Type": "image/jpeg"
+    },
+    "asset_key": "sessions/550e.../selfie.jpg",
+    "expires_in": 3600,
+    "ticket": "<opaque-signed-ticket>"
+  },
+  "id_upload": {
+    "method": "PUT",
+    "url": "https://...",
+    "fields": {},
+    "headers": {
+      "Content-Type": "image/jpeg"
+    },
+    "asset_key": "sessions/550e.../id.jpg",
+    "expires_in": 3600,
+    "ticket": "<opaque-signed-ticket>"
   }
 }
 ```
@@ -51,6 +72,12 @@ After uploading assets, finalize to start processing:
 
 ```http
 POST /api/sessions/{session_id}/finalize
+Content-Type: application/json
+
+{
+  "selfie_ticket": "<opaque-signed-ticket>",
+  "id_ticket": "<opaque-signed-ticket>"
+}
 ```
 
 **Response:**
@@ -275,7 +302,42 @@ All errors follow this format:
 | 422 | Unprocessable entity |
 | 500 | Internal server error |
 
+## Outbound Webhook Signing
 
+Webhook deliveries are signed with HMAC-SHA256 using `WEBHOOK_SECRET`.
+
+Headers on each delivery:
+
+- `X-KYC-Event`
+- `X-KYC-Timestamp` (unix epoch seconds)
+- `X-KYC-Delivery-Id` (UUID)
+- `X-KYC-Signature` (`v1=<hex_hmac>`)
+- `X-Webhook-Event` (legacy compatibility header)
+
+Signature input format:
+
+```text
+{timestamp}.{delivery_id}.{raw_json_body}
+```
+
+Verification sketch (Python):
+
+```python
+import hashlib
+import hmac
+
+def verify(secret: str, timestamp: str, delivery_id: str, body: bytes, signature_header: str) -> bool:
+    if not signature_header.startswith("v1="):
+        return False
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        f"{timestamp}.{delivery_id}.{body.decode('utf-8')}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(f"v1={expected}", signature_header)
+```
+
+Replay guidance: reject timestamps older than 5 minutes and deduplicate by `X-KYC-Delivery-Id`.
 
 
 

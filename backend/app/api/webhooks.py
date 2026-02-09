@@ -4,11 +4,22 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field
 
 from app.services import webhook_service
+from app.services.webhook_security import WebhookUrlValidationError
 
 router = APIRouter()
+
+
+def _raise_webhook_url_error(exc: WebhookUrlValidationError) -> None:
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": exc.code,
+            "message": exc.message,
+        },
+    )
 
 
 # --- Schemas ---
@@ -76,11 +87,14 @@ async def create_webhook(data: WebhookCreate) -> WebhookResponse:
             detail=f"Invalid events: {invalid_events}. Valid events: {valid_events}"
         )
     
-    webhook = await webhook_service.create_webhook(
-        url=data.url,
-        events=data.events,
-        name=data.name,
-    )
+    try:
+        webhook = await webhook_service.create_webhook(
+            url=data.url,
+            events=data.events,
+            name=data.name,
+        )
+    except WebhookUrlValidationError as exc:
+        _raise_webhook_url_error(exc)
     return WebhookResponse.model_validate(webhook)
 
 
@@ -118,13 +132,16 @@ async def update_webhook(webhook_id: UUID, data: WebhookUpdate) -> WebhookRespon
                 detail=f"Invalid events: {invalid_events}. Valid events: {valid_events}"
             )
     
-    webhook = await webhook_service.update_webhook(
-        webhook_id=webhook_id,
-        url=data.url,
-        events=data.events,
-        name=data.name,
-        enabled=data.enabled,
-    )
+    try:
+        webhook = await webhook_service.update_webhook(
+            webhook_id=webhook_id,
+            url=data.url,
+            events=data.events,
+            name=data.name,
+            enabled=data.enabled,
+        )
+    except WebhookUrlValidationError as exc:
+        _raise_webhook_url_error(exc)
     if not webhook:
         raise HTTPException(status_code=404, detail="Webhook not found")
     return WebhookResponse.model_validate(webhook)

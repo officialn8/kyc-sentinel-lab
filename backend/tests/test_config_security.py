@@ -88,6 +88,7 @@ class TestEnvironmentConfig:
             auth_disabled=False,
             backend_api_key="secure-api-key-here",
             webhook_secret="secure-webhook-secret",
+            upload_ticket_secret="secure-upload-ticket-secret",
             debug=False,
             cors_origins=["https://app.example.com"],
         )
@@ -95,6 +96,7 @@ class TestEnvironmentConfig:
         assert settings.auth_disabled is False
         assert settings.backend_api_key == "secure-api-key-here"
         assert settings.webhook_secret == "secure-webhook-secret"
+        assert settings.upload_ticket_secret == "secure-upload-ticket-secret"
         assert settings.debug is False
 
     def test_ci_env_allows_relaxed_config(self):

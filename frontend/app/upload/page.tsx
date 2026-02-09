@@ -338,8 +338,10 @@ export default function UploadPage() {
         ...deviceInfo,
         selfie_filename: selfie.file.name,
         selfie_content_type: selfie.file.type,
+        selfie_size_bytes: selfie.file.size,
         id_filename: idDoc.file.name,
         id_content_type: idDoc.file.type,
+        id_size_bytes: idDoc.file.size,
       });
 
       // Upload files with progress
@@ -352,8 +354,15 @@ export default function UploadPage() {
         ),
       ]);
 
+      if (!selfie_upload.ticket || !id_upload.ticket) {
+        throw new Error("Upload ticket missing from session creation response");
+      }
+
       // Finalize session
-      await api.finalizeSession(session.id);
+      await api.finalizeSession(session.id, {
+        selfie_ticket: selfie_upload.ticket,
+        id_ticket: id_upload.ticket,
+      });
 
       return session;
     },

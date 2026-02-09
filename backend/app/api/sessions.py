@@ -1,10 +1,13 @@
 """Session CRUD endpoints."""
 
+from datetime import datetime, timedelta, timezone
+import logging
 import os
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from botocore.exceptions import ClientError, EndpointConnectionError
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
 from sqlalchemy import select, func, or_, cast, String
 from sqlalchemy.orm import selectinload
 
@@ -16,7 +19,13 @@ from app.services.geolocation import lookup_ip_country
 from app.models.result import KYCResult
 from app.services.job_queue import enqueue_process_session
 from app.services.processing import get_processing_backend
-from app.services.audit import log_audit_event
+from app.services.audit import append_audit_event, archive_audit_event, log_audit_event
+from app.services.upload_ticket import (
+    UploadTicketError,
+    generate_upload_ticket,
+    validate_upload_ticket,
+    ticket_hash,
+)
 from app.schemas.session import (
     SessionCreate,
     SessionResponse,
@@ -24,11 +33,13 @@ from app.schemas.session import (
     SessionListResponse,
     SessionDetail,
     PresignedUpload,
+    FinalizeSessionRequest,
     SimilarFaceResponse,
     SimilarFacesListResponse,
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 _SELFIE_EXT_ALLOWLIST = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".webm"}
@@ -80,7 +91,10 @@ def _pick_extension(
 def _normalize_content_type(content_type: str | None) -> str | None:
     if not content_type:
         return None
-    return content_type.lower().strip() or None
+    normalized = content_type.lower().strip()
+    if ";" in normalized:
+        normalized = normalized.split(";", 1)[0].strip()
+    return normalized or None
 
 
 def _canonical_content_type_for_ext(ext: str | None) -> str | None:
@@ -106,6 +120,86 @@ def _get_request_id(request: Request | None) -> str | None:
         or request.headers.get("X-Correlation-ID")
         or request.headers.get("X-Trace-ID")
     )
+
+
+def _client_error_code(exc: ClientError) -> str:
+    return str(exc.response.get("Error", {}).get("Code", ""))
+
+
+async def _validate_uploaded_asset(
+    *,
+    storage: Storage,
+    asset_name: str,
+    key: str,
+    expected_content_type: str | None,
+    expected_size_bytes: int | None,
+    max_size_bytes: int,
+) -> dict | None:
+    """Validate uploaded object metadata against expected constraints."""
+    try:
+        metadata = await storage.get_object_metadata(key)
+    except ClientError as exc:
+        code = _client_error_code(exc)
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            return {
+                "asset": asset_name,
+                "key": key,
+                "code": "object_missing",
+                "message": "Uploaded object does not exist in storage",
+                "delete_object": False,
+            }
+        return {
+            "asset": asset_name,
+            "key": key,
+            "code": "storage_head_failed",
+            "message": f"Failed to read object metadata ({code or 'unknown_error'})",
+            "delete_object": False,
+        }
+
+    content_length = int(metadata.get("content_length") or 0)
+    content_type = _normalize_content_type(metadata.get("content_type"))
+    normalized_expected_type = _normalize_content_type(expected_content_type)
+
+    if content_length > max_size_bytes:
+        return {
+            "asset": asset_name,
+            "key": key,
+            "code": "object_too_large",
+            "message": f"Object size {content_length} exceeds max {max_size_bytes}",
+            "content_length": content_length,
+            "max_size_bytes": max_size_bytes,
+            "delete_object": True,
+        }
+
+    if expected_size_bytes is not None and content_length != expected_size_bytes:
+        return {
+            "asset": asset_name,
+            "key": key,
+            "code": "object_size_mismatch",
+            "message": (
+                f"Object size {content_length} does not match claimed size "
+                f"{expected_size_bytes}"
+            ),
+            "content_length": content_length,
+            "expected_size_bytes": expected_size_bytes,
+            "delete_object": True,
+        }
+
+    if normalized_expected_type and content_type != normalized_expected_type:
+        return {
+            "asset": asset_name,
+            "key": key,
+            "code": "object_content_type_mismatch",
+            "message": (
+                f"Object content type '{content_type}' does not match expected "
+                f"'{normalized_expected_type}'"
+            ),
+            "content_type": content_type,
+            "expected_content_type": normalized_expected_type,
+            "delete_object": True,
+        }
+
+    return None
 
 
 @router.post(
@@ -197,6 +291,18 @@ async def create_session(
         if _normalize_ext(_CONTENT_TYPE_TO_EXT[id_ct_client]) != _normalize_ext(id_ext):
             raise HTTPException(status_code=400, detail="ID document content type does not match file extension")
 
+    # Client-claimed file sizes (optional). Used for finalize-time tamper detection.
+    if data.selfie_size_bytes and data.selfie_size_bytes > settings.max_upload_size_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Selfie file size exceeds maximum allowed ({settings.max_upload_size_bytes} bytes)",
+        )
+    if data.id_size_bytes and data.id_size_bytes > settings.max_upload_size_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"ID document file size exceeds maximum allowed ({settings.max_upload_size_bytes} bytes)",
+        )
+
     selfie_key = f"sessions/{session.id}/selfie{selfie_ext}"
     id_key = f"sessions/{session.id}/id{id_ext}"
 
@@ -215,6 +321,34 @@ async def create_session(
     # Store asset keys
     session.selfie_asset_key = selfie_key
     session.id_asset_key = id_key
+    session.selfie_expected_size_bytes = data.selfie_size_bytes
+    session.id_expected_size_bytes = data.id_size_bytes
+    session.selfie_expected_content_type = selfie_content_type
+    session.id_expected_content_type = id_content_type
+
+    # Signed upload tickets are validated at finalize-time before processing.
+    selfie_ticket, selfie_ticket_payload = generate_upload_ticket(
+        session_id=str(session.id),
+        asset_key=selfie_key,
+        content_type=selfie_content_type,
+        max_size_bytes=settings.max_upload_size_bytes,
+        claimed_size_bytes=data.selfie_size_bytes,
+        expires_in_seconds=settings.presigned_url_expiration,
+    )
+    id_ticket, id_ticket_payload = generate_upload_ticket(
+        session_id=str(session.id),
+        asset_key=id_key,
+        content_type=id_content_type,
+        max_size_bytes=settings.max_upload_size_bytes,
+        claimed_size_bytes=data.id_size_bytes,
+        expires_in_seconds=settings.presigned_url_expiration,
+    )
+    session.selfie_upload_ticket_hash = ticket_hash(selfie_ticket)
+    session.id_upload_ticket_hash = ticket_hash(id_ticket)
+    session.upload_ticket_expires_at = min(
+        selfie_ticket_payload.expires_at_datetime,
+        id_ticket_payload.expires_at_datetime,
+    )
 
     await db.commit()
     await db.refresh(session)
@@ -246,6 +380,7 @@ async def create_session(
             headers=selfie_upload.get("headers", {}),
             asset_key=selfie_key,
             expires_in=settings.presigned_url_expiration,
+            ticket=selfie_ticket,
         ),
         id_upload=PresignedUpload(
             method=id_upload.get("method", "POST"),
@@ -254,6 +389,7 @@ async def create_session(
             headers=id_upload.get("headers", {}),
             asset_key=id_key,
             expires_in=settings.presigned_url_expiration,
+            ticket=id_ticket,
         ),
     )
 
@@ -266,6 +402,8 @@ async def finalize_session(
     session_id: UUID,
     db: DbSession,
     background_tasks: BackgroundTasks,
+    storage: Storage,
+    finalize_request: FinalizeSessionRequest | None = Body(default=None),
     force: bool = False,
     request: Request = None,
 ) -> dict:
@@ -278,9 +416,6 @@ async def finalize_session(
         force: If True, allows retrying failed sessions.
                Processing sessions are only retried if they exceed the stuck timeout.
     """
-    from datetime import datetime, timedelta, timezone
-    from sqlalchemy import select
-
     # IDEMPOTENCY: Use SELECT FOR UPDATE to prevent race conditions
     # This locks the row until the transaction commits, serializing concurrent calls
     query = (
@@ -327,6 +462,154 @@ async def finalize_session(
             status_code=400,
             detail=f"Session is in unexpected state: {session.status}",
         )
+
+    # Validate upload tickets and object metadata before processing begins.
+    expected_selfie_type = _normalize_content_type(session.selfie_expected_content_type) or _canonical_content_type_for_ext(
+        _ext_from_filename(session.selfie_asset_key)
+    )
+    expected_id_type = _normalize_content_type(session.id_expected_content_type) or _canonical_content_type_for_ext(
+        _ext_from_filename(session.id_asset_key)
+    )
+
+    validation_errors: list[dict] = []
+    selfie_ticket = finalize_request.selfie_ticket if finalize_request else None
+    id_ticket = finalize_request.id_ticket if finalize_request else None
+
+    if session.selfie_upload_ticket_hash and not selfie_ticket:
+        validation_errors.append(
+            {
+                "asset": "selfie",
+                "key": session.selfie_asset_key,
+                "code": "ticket_missing",
+                "message": "Selfie upload ticket is required for finalize",
+                "delete_object": False,
+            }
+        )
+    if session.id_upload_ticket_hash and not id_ticket:
+        validation_errors.append(
+            {
+                "asset": "id",
+                "key": session.id_asset_key,
+                "code": "ticket_missing",
+                "message": "ID upload ticket is required for finalize",
+                "delete_object": False,
+            }
+        )
+
+    if selfie_ticket and session.selfie_asset_key:
+        try:
+            validate_upload_ticket(
+                selfie_ticket,
+                expected_session_id=str(session.id),
+                expected_asset_key=session.selfie_asset_key,
+                expected_content_type=expected_selfie_type or "",
+                expected_hash=session.selfie_upload_ticket_hash,
+            )
+        except UploadTicketError as exc:
+            validation_errors.append(
+                {
+                    "asset": "selfie",
+                    "key": session.selfie_asset_key,
+                    "code": exc.code,
+                    "message": exc.message,
+                    "delete_object": True,
+                }
+            )
+
+    if id_ticket and session.id_asset_key:
+        try:
+            validate_upload_ticket(
+                id_ticket,
+                expected_session_id=str(session.id),
+                expected_asset_key=session.id_asset_key,
+                expected_content_type=expected_id_type or "",
+                expected_hash=session.id_upload_ticket_hash,
+            )
+        except UploadTicketError as exc:
+            validation_errors.append(
+                {
+                    "asset": "id",
+                    "key": session.id_asset_key,
+                    "code": exc.code,
+                    "message": exc.message,
+                    "delete_object": True,
+                }
+            )
+
+    # Validate object metadata only if tickets validated cleanly.
+    if not validation_errors:
+        if not session.selfie_asset_key:
+            validation_errors.append(
+                {
+                    "asset": "selfie",
+                    "key": None,
+                    "code": "asset_key_missing",
+                    "message": "Selfie asset key is missing",
+                    "delete_object": False,
+                }
+            )
+        else:
+            selfie_error = await _validate_uploaded_asset(
+                storage=storage,
+                asset_name="selfie",
+                key=session.selfie_asset_key,
+                expected_content_type=expected_selfie_type,
+                expected_size_bytes=session.selfie_expected_size_bytes,
+                max_size_bytes=settings.max_upload_size_bytes,
+            )
+            if selfie_error:
+                validation_errors.append(selfie_error)
+
+        if not session.id_asset_key:
+            validation_errors.append(
+                {
+                    "asset": "id",
+                    "key": None,
+                    "code": "asset_key_missing",
+                    "message": "ID asset key is missing",
+                    "delete_object": False,
+                }
+            )
+        else:
+            id_error = await _validate_uploaded_asset(
+                storage=storage,
+                asset_name="id",
+                key=session.id_asset_key,
+                expected_content_type=expected_id_type,
+                expected_size_bytes=session.id_expected_size_bytes,
+                max_size_bytes=settings.max_upload_size_bytes,
+            )
+            if id_error:
+                validation_errors.append(id_error)
+
+    if validation_errors:
+        # Delete invalid uploaded objects immediately to limit storage abuse.
+        delete_keys = {
+            err.get("key")
+            for err in validation_errors
+            if err.get("delete_object") and err.get("key")
+        }
+        for key in delete_keys:
+            try:
+                await storage.delete_object(str(key))
+            except ClientError:
+                # Ignore cleanup failures; validation still fails the request.
+                pass
+
+        await log_audit_event(
+            db,
+            event_type="session.upload_validation_failed",
+            status="failed",
+            session_id=str(session.id),
+            resource_type="session",
+            resource_id=str(session.id),
+            request_id=_get_request_id(request),
+            ip_address=extract_client_ip(request) if request else None,
+            user_agent=request.headers.get("User-Agent") if request else None,
+            metadata={"errors": validation_errors, "deleted_keys": sorted(str(k) for k in delete_keys)},
+            request=request,
+        )
+        raise HTTPException(status_code=400, detail="Upload validation failed")
 
     # Atomically update status within the same transaction (lock still held)
     session.status = "processing"
@@ -487,11 +770,19 @@ async def get_session(
     id_crop_url = None
     selfie_crop_key = f"crops/{session_id}/selfie_face.jpg"
     id_crop_key = f"crops/{session_id}/id_face.jpg"
-    
-    if await storage.object_exists(selfie_crop_key):
-        selfie_crop_url = await storage.generate_presigned_download_url(selfie_crop_key)
-    if await storage.object_exists(id_crop_key):
-        id_crop_url = await storage.generate_presigned_download_url(id_crop_key)
+
+    # Optional crop previews should never take the whole endpoint down.
+    try:
+        if await storage.object_exists(selfie_crop_key):
+            selfie_crop_url = await storage.generate_presigned_download_url(selfie_crop_key)
+    except (ClientError, EndpointConnectionError) as exc:
+        logger.warning("Skipping selfie crop URL for session %s due to storage error: %s", session_id, exc)
+
+    try:
+        if await storage.object_exists(id_crop_key):
+            id_crop_url = await storage.generate_presigned_download_url(id_crop_key)
+    except (ClientError, EndpointConnectionError) as exc:
+        logger.warning("Skipping ID crop URL for session %s due to storage error: %s", session_id, exc)
 
     return SessionDetail(
         id=session.id,
@@ -586,7 +877,7 @@ async def erase_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    await log_audit_event(
+    erasure_requested_event = await append_audit_event(
         db,
         event_type="session.erasure_requested",
         status="requested",
@@ -597,6 +888,7 @@ async def erase_session(
         ip_address=extract_client_ip(request),
         user_agent=request.headers.get("User-Agent"),
         metadata={"reason": reason},
+        commit=False,
         request=request,
     )
 
@@ -607,9 +899,8 @@ async def erase_session(
 
     # Delete session and related records (cascade)
     await db.delete(session)
-    await db.commit()
 
-    await log_audit_event(
+    erasure_completed_event = await append_audit_event(
         db,
         event_type="session.erasure_completed",
         status="success",
@@ -624,8 +915,16 @@ async def erase_session(
             "deleted_prefixes": [f"sessions/{session_id}/", f"crops/{session_id}/"],
             "deleted_objects": deleted_objects,
         },
+        commit=False,
         request=request,
     )
+
+    # Single commit keeps row lock semantics intact for the entire erasure transaction.
+    await db.commit()
+
+    # Archive events after commit (best effort; does not affect erasure outcome).
+    await archive_audit_event(db, erasure_requested_event, commit=True)
+    await archive_audit_event(db, erasure_completed_event, commit=True)
 
     return {"status": "erased", "id": str(session_id), "deleted_objects": deleted_objects}
 

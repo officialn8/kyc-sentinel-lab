@@ -62,6 +62,7 @@ if [ "$ENVIRONMENT" = "production" ] || [ "$ENVIRONMENT" = "staging" ]; then
     # Required variables
     check_required "ENVIRONMENT" || ((ERRORS++))
     check_required "WEBHOOK_SECRET" || ((ERRORS++))
+    check_required "UPLOAD_TICKET_SECRET" || ((ERRORS++))
 
     # Check authentication (at least one method required)
     HAS_API_KEY=${BACKEND_API_KEY:-""}
@@ -120,5 +121,6 @@ else
     echo "export ENVIRONMENT=production"
     echo "export BACKEND_API_KEY=\$(openssl rand -base64 32)"
     echo "export WEBHOOK_SECRET=\$(openssl rand -base64 32)"
+    echo "export UPLOAD_TICKET_SECRET=\$(openssl rand -base64 32)"
     exit 1
 fi

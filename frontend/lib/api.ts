@@ -81,6 +81,7 @@ export interface PresignedUpload {
   headers?: Record<string, string>;
   asset_key: string;
   expires_in: number;
+  ticket?: string;
 }
 
 export interface SessionCreateResponse {
@@ -169,19 +170,25 @@ export const api = {
     ip_country?: string;
     selfie_filename?: string;
     selfie_content_type?: string;
+    selfie_size_bytes?: number;
     id_filename?: string;
     id_content_type?: string;
+    id_size_bytes?: number;
   }) =>
     fetchApi<SessionCreateResponse>("/api/sessions", {
       method: "POST",
       body: JSON.stringify(data),
     }),
 
-  finalizeSession: (id: string) =>
+  finalizeSession: (
+    id: string,
+    data?: { selfie_ticket?: string; id_ticket?: string }
+  ) =>
     fetchApi<{ status: string; message: string }>(
       `/api/sessions/${id}/finalize`,
       {
         method: "POST",
+        body: data ? JSON.stringify(data) : undefined,
       }
     ),
 
@@ -340,4 +347,3 @@ export async function uploadToPresignedUrl(
     throw new Error(`Upload failed: ${res.status}`);
   }
 }
-
