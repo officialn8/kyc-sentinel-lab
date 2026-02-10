@@ -1,6 +1,5 @@
 """Risk scoring and decision logic."""
 
-import math
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING
 from enum import Enum
@@ -147,13 +146,6 @@ DOCUMENT_INTEGRITY_CODES = {
     "DOC_METADATA_SUSPICIOUS",
 }
 
-# Phase 2: Fraud pattern codes
-FRAUD_PATTERN_CODES = {
-    "FRAUD_HIGH_VELOCITY",
-    "FRAUD_GEO_MISMATCH",
-}
-
-
 def compute_risk_score(
     face_similarity: float,
     pad_score: float,
@@ -161,6 +153,8 @@ def compute_risk_score(
     reasons: list["KYCReason"],
     liveness_score: Optional[float] = None,
     face_quality_score: Optional[float] = None,
+    fraud_boost_points: int = 0,
+    force_fail: bool = False,
     config: Optional[ScoringConfig] = None,
 ) -> tuple[int, str]:
     """
@@ -173,6 +167,8 @@ def compute_risk_score(
         reasons: List of reason codes generated during analysis
         liveness_score: Optional explicit liveness score (0-1, higher = more confident live)
         face_quality_score: Optional face quality score (0-1, higher = better quality)
+        fraud_boost_points: Additional risk points from fraud-pattern scoring
+        force_fail: Force fail decision regardless of score thresholds
         config: Optional scoring configuration. Uses DEFAULT profile if not provided.
     
     Returns:
@@ -245,12 +241,13 @@ def compute_risk_score(
         doc_boost = config.review_threshold + 15
         risk_score = max(risk_score, doc_boost)
     
-    # Phase 2: Check for fraud pattern signals
-    fraud_signals = reason_codes & FRAUD_PATTERN_CODES
-    if fraud_signals:
-        # Boost risk score for fraud patterns
-        fraud_boost = config.review_threshold + 10
-        risk_score = max(risk_score, fraud_boost)
+    # Apply graduated fraud score boost from the dedicated fraud scoring service.
+    if fraud_boost_points > 0:
+        risk_score = min(100, risk_score + int(fraud_boost_points))
+
+    # Explicit force-fail path for severe fraud ring patterns.
+    if force_fail:
+        return max(risk_score, config.fail_threshold), "fail"
 
     # Hard fail rules: Any high-severity reason forces fail
     high_severity_reasons = [r for r in reasons if r.severity == "high"]
@@ -371,8 +368,6 @@ def compute_liveness_score(
         score += 0.1
     
     return min(score, 1.0)
-
-
 
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import re
 import secrets
 import time
 from collections import defaultdict, deque
@@ -16,6 +17,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+_CLERK_ORG_ID_RE = re.compile(r"^org_[A-Za-z0-9]+$")
 
 # Optional Redis import
 try:
@@ -122,6 +124,26 @@ async def require_api_key(
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
 ) -> None:
     await require_auth(credentials=None, x_api_key=x_api_key)
+
+
+async def require_tenant_context(
+    x_authenticated_org_id: Optional[str] = Header(
+        default=None, alias="X-Authenticated-Org-Id"
+    ),
+) -> str:
+    """Require and validate tenant context forwarded by the trusted proxy."""
+    tenant_id = (x_authenticated_org_id or "").strip()
+    if not tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tenant context required",
+        )
+    if len(tenant_id) > 128 or not _CLERK_ORG_ID_RE.fullmatch(tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid tenant context",
+        )
+    return tenant_id
 
 
 # =============================================================================
@@ -460,5 +482,4 @@ def rate_limiter(*, limit: int, window_seconds: int):
 
     # Otherwise use in-memory (single-instance)
     return _rate_limiter_memory(limit=limit, window_seconds=window_seconds)
-
 

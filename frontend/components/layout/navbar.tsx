@@ -3,6 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { OrganizationSwitcher, SignedIn } from "@clerk/nextjs";
 import { Bell, Menu, Search, Shield } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MobileNav } from "@/components/layout/mobile-nav";
@@ -15,6 +16,7 @@ const pageTitles: Record<string, string> = {
   "/upload": "Upload Session",
   "/simulate": "Attack Simulator",
   "/metrics": "Metrics",
+  "/organization/create": "Create Organization",
 };
 
 export function Navbar() {
@@ -71,6 +73,16 @@ export function Navbar() {
             </kbd>
           </Button>
 
+          <SignedIn>
+            <OrganizationSwitcher
+              hidePersonal
+              createOrganizationMode="navigation"
+              createOrganizationUrl="/organization/create"
+              afterCreateOrganizationUrl="/"
+              afterSelectOrganizationUrl="/"
+            />
+          </SignedIn>
+
           <ThemeToggle variant="icon" />
 
           <Button variant="ghost" size="icon" className="relative">
@@ -89,7 +101,6 @@ export function Navbar() {
     </>
   );
 }
-
 
 
 

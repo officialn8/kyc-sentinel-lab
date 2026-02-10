@@ -1,9 +1,10 @@
 """Metrics and analytics endpoints."""
 
-from fastapi import APIRouter
-from sqlalchemy import select, func, case, and_
+from fastapi import APIRouter, Depends
+from sqlalchemy import select, func, and_
 
 from app.api.deps import DbSession
+from app.api.security import require_tenant_context
 from app.models.session import KYCSession
 from app.models.result import KYCResult
 from app.schemas.metrics import (
@@ -23,17 +24,30 @@ from app.schemas.metrics import (
 router = APIRouter()
 
 
+def _tenant_scope(tenant_id: str):
+    return KYCSession.tenant_id == tenant_id
+
+
 @router.get("/summary", response_model=MetricsSummary)
-async def get_metrics_summary(db: DbSession) -> MetricsSummary:
+async def get_metrics_summary(
+    db: DbSession,
+    tenant_id: str = Depends(require_tenant_context),
+) -> MetricsSummary:
     """Get aggregate metrics summary."""
     # Total sessions
-    total = await db.scalar(select(func.count()).select_from(KYCSession)) or 0
+    total = (
+        await db.scalar(
+            select(func.count()).select_from(KYCSession).where(_tenant_scope(tenant_id))
+        )
+        or 0
+    )
 
     # Completed sessions
     completed = (
         await db.scalar(
             select(func.count())
             .select_from(KYCSession)
+            .where(_tenant_scope(tenant_id))
             .where(KYCSession.status == "completed")
         )
         or 0
@@ -42,30 +56,51 @@ async def get_metrics_summary(db: DbSession) -> MetricsSummary:
     # Decision counts
     pass_count = (
         await db.scalar(
-            select(func.count()).select_from(KYCResult).where(KYCResult.decision == "pass")
+            select(func.count())
+            .select_from(KYCSession)
+            .join(KYCResult)
+            .where(_tenant_scope(tenant_id))
+            .where(KYCResult.decision == "pass")
         )
         or 0
     )
     review_count = (
         await db.scalar(
-            select(func.count()).select_from(KYCResult).where(KYCResult.decision == "review")
+            select(func.count())
+            .select_from(KYCSession)
+            .join(KYCResult)
+            .where(_tenant_scope(tenant_id))
+            .where(KYCResult.decision == "review")
         )
         or 0
     )
     fail_count = (
         await db.scalar(
-            select(func.count()).select_from(KYCResult).where(KYCResult.decision == "fail")
+            select(func.count())
+            .select_from(KYCSession)
+            .join(KYCResult)
+            .where(_tenant_scope(tenant_id))
+            .where(KYCResult.decision == "fail")
         )
         or 0
     )
 
     # Average risk score
-    avg_score = await db.scalar(select(func.avg(KYCResult.risk_score))) or 0.0
+    avg_score = (
+        await db.scalar(
+            select(func.avg(KYCResult.risk_score))
+            .select_from(KYCSession)
+            .join(KYCResult)
+            .where(_tenant_scope(tenant_id))
+        )
+        or 0.0
+    )
 
     # Detection rate (synthetic attacks that were flagged as review or fail)
     synthetic_attacks = await db.scalar(
         select(func.count())
         .select_from(KYCSession)
+        .where(_tenant_scope(tenant_id))
         .where(KYCSession.source == "synthetic")
         .where(KYCSession.attack_family != "benign")
     ) or 0
@@ -74,6 +109,7 @@ async def get_metrics_summary(db: DbSession) -> MetricsSummary:
         select(func.count())
         .select_from(KYCSession)
         .join(KYCResult)
+        .where(_tenant_scope(tenant_id))
         .where(KYCSession.source == "synthetic")
         .where(KYCSession.attack_family != "benign")
         .where(KYCResult.decision.in_(["review", "fail"]))
@@ -95,7 +131,10 @@ async def get_metrics_summary(db: DbSession) -> MetricsSummary:
 
 
 @router.get("/by-attack-family", response_model=AttackFamilyBreakdown)
-async def get_attack_family_breakdown(db: DbSession) -> AttackFamilyBreakdown:
+async def get_attack_family_breakdown(
+    db: DbSession,
+    tenant_id: str = Depends(require_tenant_context),
+) -> AttackFamilyBreakdown:
     """Get metrics breakdown by attack family."""
     families = ["replay", "injection", "face_swap", "doc_tamper", "benign"]
     results = []
@@ -106,6 +145,7 @@ async def get_attack_family_breakdown(db: DbSession) -> AttackFamilyBreakdown:
             await db.scalar(
                 select(func.count())
                 .select_from(KYCSession)
+                .where(_tenant_scope(tenant_id))
                 .where(KYCSession.attack_family == family)
                 .where(KYCSession.status == "completed")
             )
@@ -133,6 +173,7 @@ async def get_attack_family_breakdown(db: DbSession) -> AttackFamilyBreakdown:
                     select(func.count())
                     .select_from(KYCSession)
                     .join(KYCResult)
+                    .where(_tenant_scope(tenant_id))
                     .where(KYCSession.attack_family == family)
                     .where(KYCResult.decision == "pass")
                 )
@@ -144,6 +185,7 @@ async def get_attack_family_breakdown(db: DbSession) -> AttackFamilyBreakdown:
                     select(func.count())
                     .select_from(KYCSession)
                     .join(KYCResult)
+                    .where(_tenant_scope(tenant_id))
                     .where(KYCSession.attack_family == family)
                     .where(KYCResult.decision.in_(["review", "fail"]))
                 )
@@ -157,6 +199,7 @@ async def get_attack_family_breakdown(db: DbSession) -> AttackFamilyBreakdown:
                 select(func.avg(KYCResult.risk_score))
                 .select_from(KYCSession)
                 .join(KYCResult)
+                .where(_tenant_scope(tenant_id))
                 .where(KYCSession.attack_family == family)
             )
             or 0.0
@@ -177,7 +220,10 @@ async def get_attack_family_breakdown(db: DbSession) -> AttackFamilyBreakdown:
 
 
 @router.get("/confusion-matrix", response_model=ConfusionMatrixData)
-async def get_confusion_matrix(db: DbSession) -> ConfusionMatrixData:
+async def get_confusion_matrix(
+    db: DbSession,
+    tenant_id: str = Depends(require_tenant_context),
+) -> ConfusionMatrixData:
     """Get confusion matrix data for visualization."""
     attack_families = ["benign", "replay", "injection", "face_swap", "doc_tamper"]
     decisions = ["pass", "review", "fail"]
@@ -192,6 +238,7 @@ async def get_confusion_matrix(db: DbSession) -> ConfusionMatrixData:
                     select(func.count())
                     .select_from(KYCSession)
                     .join(KYCResult)
+                    .where(_tenant_scope(tenant_id))
                     .where(KYCSession.attack_family == family)
                     .where(KYCResult.decision == decision)
                 )
@@ -210,7 +257,10 @@ async def get_confusion_matrix(db: DbSession) -> ConfusionMatrixData:
 
 
 @router.get("/classification", response_model=ClassificationMetrics)
-async def get_classification_metrics(db: DbSession) -> ClassificationMetrics:
+async def get_classification_metrics(
+    db: DbSession,
+    tenant_id: str = Depends(require_tenant_context),
+) -> ClassificationMetrics:
     """Get classification performance metrics (precision, recall, F1, FPR).
 
     Binary classification where:
@@ -224,6 +274,7 @@ async def get_classification_metrics(db: DbSession) -> ClassificationMetrics:
         select(func.count())
         .select_from(KYCSession)
         .join(KYCResult)
+        .where(_tenant_scope(tenant_id))
         .where(KYCSession.attack_family != "benign")
         .where(KYCResult.decision.in_(["review", "fail"]))
     ) or 0
@@ -233,6 +284,7 @@ async def get_classification_metrics(db: DbSession) -> ClassificationMetrics:
         select(func.count())
         .select_from(KYCSession)
         .join(KYCResult)
+        .where(_tenant_scope(tenant_id))
         .where(KYCSession.attack_family == "benign")
         .where(KYCResult.decision == "pass")
     ) or 0
@@ -242,6 +294,7 @@ async def get_classification_metrics(db: DbSession) -> ClassificationMetrics:
         select(func.count())
         .select_from(KYCSession)
         .join(KYCResult)
+        .where(_tenant_scope(tenant_id))
         .where(KYCSession.attack_family == "benign")
         .where(KYCResult.decision.in_(["review", "fail"]))
     ) or 0
@@ -251,6 +304,7 @@ async def get_classification_metrics(db: DbSession) -> ClassificationMetrics:
         select(func.count())
         .select_from(KYCSession)
         .join(KYCResult)
+        .where(_tenant_scope(tenant_id))
         .where(KYCSession.attack_family != "benign")
         .where(KYCResult.decision == "pass")
     ) or 0
@@ -278,7 +332,10 @@ async def get_classification_metrics(db: DbSession) -> ClassificationMetrics:
 
 
 @router.get("/score-distribution", response_model=ScoreDistribution)
-async def get_score_distribution(db: DbSession) -> ScoreDistribution:
+async def get_score_distribution(
+    db: DbSession,
+    tenant_id: str = Depends(require_tenant_context),
+) -> ScoreDistribution:
     """Get risk score distribution bucketed by score range and attack family.
 
     Returns histogram data showing how risk scores are distributed,
@@ -298,6 +355,7 @@ async def get_score_distribution(db: DbSession) -> ScoreDistribution:
                 select(func.count())
                 .select_from(KYCSession)
                 .join(KYCResult)
+                .where(_tenant_scope(tenant_id))
                 .where(KYCSession.attack_family == family)
                 .where(
                     and_(
@@ -324,7 +382,9 @@ async def get_score_distribution(db: DbSession) -> ScoreDistribution:
 
 
 @router.get("/profiles", response_model=ActiveProfiles)
-async def get_active_profiles() -> ActiveProfiles:
+async def get_active_profiles(
+    tenant_id: str = Depends(require_tenant_context),
+) -> ActiveProfiles:
     """Get currently active scoring and PAD configuration profiles.
 
     Returns the active profile configuration for transparency
@@ -334,6 +394,9 @@ async def get_active_profiles() -> ActiveProfiles:
     from app.config import settings
     from app.services.scoring import get_scoring_config, SCORING_PROFILES, ScoringProfile
     from app.detection.pad_heuristics import get_pad_config, PAD_PROFILES, PADProfile
+
+    # Explicit dependency for tenant-scoped access.
+    _ = tenant_id
 
     # Get scoring profile info
     scoring_config = get_scoring_config(settings.scoring_profile)
@@ -372,8 +435,6 @@ async def get_active_profiles() -> ActiveProfiles:
         scoring_profile=active_scoring,
         pad_profile=active_pad,
     )
-
-
 
 
 

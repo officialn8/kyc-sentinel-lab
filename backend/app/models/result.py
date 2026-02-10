@@ -44,6 +44,9 @@ class KYCResult(Base):
     doc_score: Mapped[float | None] = mapped_column(
         Float, nullable=True
     )  # 0-1 (higher = more suspicious)
+    fraud_score: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )  # 0-1 aggregated fraud-pattern score
 
     # Versioning
     model_version: Mapped[str] = mapped_column(String(128), default="v1")
@@ -54,7 +57,6 @@ class KYCResult(Base):
 
     def __repr__(self) -> str:
         return f"<KYCResult(id={self.id}, risk_score={self.risk_score}, decision={self.decision})>"
-
 
 
 

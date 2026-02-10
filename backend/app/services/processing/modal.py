@@ -273,9 +273,11 @@ class ModalBackend:
 
                 # Fraud detection (advisory)
                 from app.services.fraud_detection import compute_fraud_signals
+                from app.services.fraud_scoring import FraudScoringService
 
                 fraud_signals = await compute_fraud_signals(
                     db=db,
+                    tenant_id=session.tenant_id,
                     device_fingerprint=session.device_fingerprint,
                     client_ip=session.client_ip,
                     session_id=str(session.id),
@@ -286,6 +288,7 @@ class ModalBackend:
                     device_timezone=session.device_timezone,
                     exclude_session_id=str(session.id),
                 )
+                fraud_score_result = FraudScoringService().score(fraud_signals)
                 for code in fraud_signals.reason_codes:
                     reason_code = getattr(ReasonCode, code, None)
                     if reason_code:
@@ -308,6 +311,24 @@ class ModalBackend:
                         if fraud_signals.fraud_ring:
                             evidence["fraud_ring"] = fraud_signals.fraud_ring
                         message = REASON_MESSAGES.get(reason_code, code)
+                        if code == "FRAUD_HIGH_VELOCITY" and fraud_signals.velocity_check:
+                            submissions = max(
+                                fraud_signals.velocity_check.device_submissions_1h,
+                                fraud_signals.velocity_check.device_submissions_24h,
+                                fraud_signals.velocity_check.ip_submissions_1h,
+                                fraud_signals.velocity_check.ip_submissions_24h,
+                            )
+                            period = (
+                                fraud_signals.velocity_check.flags[0].split(":")[0]
+                                if fraud_signals.velocity_check.flags
+                                else "velocity_window"
+                            )
+                            message = message.format(submissions=submissions, period=period)
+                        if code == "FRAUD_GEO_MISMATCH" and fraud_signals.geo_anomaly:
+                            message = message.format(
+                                doc_country=fraud_signals.geo_anomaly.document_country or "unknown",
+                                device_country=fraud_signals.geo_anomaly.device_country or "unknown",
+                            )
                         if code == "FRAUD_RING_LINKED" and fraud_signals.fraud_ring:
                             message = message.format(
                                 match_count=fraud_signals.fraud_ring.get("match_count"),
@@ -334,6 +355,8 @@ class ModalBackend:
                     pad_score=pad_score,
                     doc_score=doc_score,
                     reasons=reasons,
+                    fraud_boost_points=fraud_score_result.boost_points,
+                    force_fail=fraud_score_result.force_fail,
                     config=scoring_config,
                 )
 
@@ -345,6 +368,7 @@ class ModalBackend:
                     face_similarity=face_similarity,
                     pad_score=pad_score,
                     doc_score=doc_score,
+                    fraud_score=fraud_score_result.risk_fraction,
                 )
                 db.add(result)
 

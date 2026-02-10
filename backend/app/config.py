@@ -232,6 +232,20 @@ class Settings(BaseSettings):
             return [p.strip() for p in s.split(",") if p.strip()]
         return v
 
+    @field_validator("fraud_ring_similarity_threshold")
+    @classmethod
+    def _validate_fraud_ring_similarity_threshold(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            raise ValueError("FRAUD_RING_SIMILARITY_THRESHOLD must be between 0.0 and 1.0")
+        return v
+
+    @field_validator("fraud_ring_min_matches")
+    @classmethod
+    def _validate_fraud_ring_min_matches(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("FRAUD_RING_MIN_MATCHES must be >= 1")
+        return v
+
     @property
     def async_database_url(self) -> str:
         """Ensure database URL uses asyncpg driver."""

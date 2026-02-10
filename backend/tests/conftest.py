@@ -1,6 +1,5 @@
 """Pytest fixtures for testing."""
 
-import asyncio
 from collections.abc import AsyncGenerator
 from typing import Generator
 
@@ -8,11 +7,22 @@ import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 from app.main import app
 from app.database import Base, get_db
-from app.config import settings
+from app.api.security import require_auth
+
+
+TEST_TENANT_ID = "org_testtenant"
+
+
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_for_sqlite(_type, _compiler, **_kwargs):
+    """Allow Postgres JSONB columns to work in SQLite test database."""
+    return "JSON"
 
 
 def pytest_addoption(parser):
@@ -55,14 +65,6 @@ TestSessionLocal = async_sessionmaker(
 )
 
 
-@pytest.fixture(scope="session")
-def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
-    """Create event loop for session-scoped async fixtures."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
 @pytest_asyncio.fixture(scope="function")
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Create a fresh database session for each test."""
@@ -83,11 +85,38 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
+    async def override_require_auth() -> None:
+        return None
+
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_auth] = override_require_auth
     
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    async with AsyncClient(
+        app=app,
+        base_url="http://test",
+        headers={"X-Authenticated-Org-Id": TEST_TENANT_ID},
+    ) as ac:
         yield ac
     
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture(scope="function")
+async def no_tenant_client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+    """Client fixture without tenant header for negative tests."""
+
+    async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
+        yield db_session
+
+    async def override_require_auth() -> None:
+        return None
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_auth] = override_require_auth
+
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        yield ac
+
     app.dependency_overrides.clear()
 
 
@@ -96,6 +125,3 @@ def sync_client() -> Generator[TestClient, None, None]:
     """Synchronous test client for simple tests."""
     with TestClient(app) as c:
         yield c
-
-
-

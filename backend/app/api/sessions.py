@@ -12,7 +12,11 @@ from sqlalchemy import select, func, or_, cast, String
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import DbSession, Storage
-from app.api.security import rate_limiter, extract_client_ip
+from app.api.security import (
+    rate_limiter,
+    extract_client_ip,
+    require_tenant_context,
+)
 from app.config import settings
 from app.models.session import KYCSession
 from app.services.geolocation import lookup_ip_country
@@ -212,6 +216,7 @@ async def create_session(
     request: Request,
     db: DbSession,
     storage: Storage,
+    tenant_id: str = Depends(require_tenant_context),
 ) -> SessionCreateResponse:
     """Create a new KYC session and get presigned URLs for upload.
 
@@ -224,18 +229,18 @@ async def create_session(
     client_ip = extract_client_ip(request)
 
     # SECURITY: Server-side IP geolocation (trusted, unlike client-provided)
-    # Falls back to client-provided ip_country if GeoIP unavailable
     server_ip_country = lookup_ip_country(client_ip)
-    ip_country = server_ip_country or data.ip_country  # Prefer server-side
+    ip_country = server_ip_country
 
     # Create session with server-side enrichment
     session = KYCSession(
         source=data.source,
+        tenant_id=tenant_id,
         attack_family=data.attack_family,
         attack_severity=data.attack_severity,
         device_os=data.device_os,
         device_model=data.device_model,
-        ip_country=ip_country,  # Server-enriched (trusted) or client fallback
+        ip_country=ip_country,  # Server-enriched (trusted)
         device_fingerprint=data.device_fingerprint,  # Client-provided (untrusted)
         device_timezone=data.device_timezone,  # Client-provided (untrusted)
         client_ip=client_ip,  # SERVER-SIDE capture (trusted)
@@ -364,6 +369,7 @@ async def create_session(
         ip_address=client_ip,
         user_agent=request.headers.get("User-Agent"),
         metadata={
+            "tenant_id": session.tenant_id,
             "source": session.source,
             "attack_family": session.attack_family,
             "attack_severity": session.attack_severity,
@@ -403,6 +409,7 @@ async def finalize_session(
     db: DbSession,
     background_tasks: BackgroundTasks,
     storage: Storage,
+    tenant_id: str = Depends(require_tenant_context),
     finalize_request: FinalizeSessionRequest | None = Body(default=None),
     force: bool = False,
     request: Request = None,
@@ -421,6 +428,7 @@ async def finalize_session(
     query = (
         select(KYCSession)
         .where(KYCSession.id == session_id)
+        .where(KYCSession.tenant_id == tenant_id)
         .with_for_update(nowait=False)  # Block until lock is available
     )
     result = await db.execute(query)
@@ -657,6 +665,7 @@ async def finalize_session(
 @router.get("", response_model=SessionListResponse)
 async def list_sessions(
     db: DbSession,
+    tenant_id: str = Depends(require_tenant_context),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     status: Optional[str] = Query(default=None),
@@ -668,7 +677,7 @@ async def list_sessions(
 ) -> SessionListResponse:
     """List sessions with filters, search, and pagination."""
     # Build query
-    query = select(KYCSession)
+    query = select(KYCSession).where(KYCSession.tenant_id == tenant_id)
 
     # Exclude soft-deleted sessions by default
     if not include_deleted:
@@ -735,6 +744,7 @@ async def get_session(
     session_id: UUID,
     db: DbSession,
     storage: Storage,
+    tenant_id: str = Depends(require_tenant_context),
     include_deleted: bool = Query(default=False),
 ) -> SessionDetail:
     """Get full session details with results and reasons."""
@@ -745,6 +755,7 @@ async def get_session(
             selectinload(KYCSession.reasons),
         )
         .where(KYCSession.id == session_id)
+        .where(KYCSession.tenant_id == tenant_id)
     )
 
     result = await db.execute(query)
@@ -817,10 +828,17 @@ async def delete_session(
     db: DbSession,
     storage: Storage,
     request: Request,
+    tenant_id: str = Depends(require_tenant_context),
     reason: Optional[str] = Query(default=None, max_length=200),
 ) -> dict:
     """Soft-delete a session for operational removal (data retained)."""
-    session = await db.get(KYCSession, session_id)
+    query = (
+        select(KYCSession)
+        .where(KYCSession.id == session_id)
+        .where(KYCSession.tenant_id == tenant_id)
+    )
+    result = await db.execute(query)
+    session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     if session.deleted_at:
@@ -861,6 +879,7 @@ async def erase_session(
     db: DbSession,
     storage: Storage,
     request: Request,
+    tenant_id: str = Depends(require_tenant_context),
     reason: str = Query(..., min_length=3, max_length=200),
 ) -> dict:
     """GDPR erasure: hard delete all data and assets with audit logging."""
@@ -869,6 +888,7 @@ async def erase_session(
     query = (
         select(KYCSession)
         .where(KYCSession.id == session_id)
+        .where(KYCSession.tenant_id == tenant_id)
         .with_for_update(nowait=False)
     )
     result = await db.execute(query)
@@ -932,6 +952,7 @@ async def erase_session(
 async def find_similar_sessions(
     session_id: UUID,
     db: DbSession,
+    tenant_id: str = Depends(require_tenant_context),
     threshold: float = Query(
         default=0.7,
         ge=0.0,
@@ -954,7 +975,12 @@ async def find_similar_sessions(
     Returns:
         List of similar sessions with similarity scores
     """
-    session = await db.get(KYCSession, session_id)
+    source_query = (
+        select(KYCSession)
+        .where(KYCSession.id == session_id)
+        .where(KYCSession.tenant_id == tenant_id)
+    )
+    session = (await db.execute(source_query)).scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -980,6 +1006,7 @@ async def find_similar_sessions(
         )
         .options(selectinload(KYCSession.result))  # Eager load results
         .where(KYCSession.id != session_id)
+        .where(KYCSession.tenant_id == tenant_id)
         .where(KYCSession.face_embedding.isnot(None))
         .where(KYCSession.deleted_at.is_(None))
         .where(distance_expr < max_distance)  # Filter by threshold

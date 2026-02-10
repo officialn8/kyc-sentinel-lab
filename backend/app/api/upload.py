@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
 from app.api.deps import Storage, DbSession
-from app.api.security import rate_limiter
+from app.api.security import rate_limiter, require_tenant_context
 from app.models.session import KYCSession
 
 router = APIRouter()
@@ -69,6 +69,7 @@ async def get_presigned_url(
     key: str,
     db: DbSession,
     storage: Storage,
+    tenant_id: str = Depends(require_tenant_context),
     content_type: str | None = None,
 ) -> dict:
     """Get a presigned URL for uploading a file.
@@ -84,9 +85,13 @@ async def get_presigned_url(
     """
     session_id = _validate_storage_key(key)
 
-    # SECURITY: Verify session exists and is still pending
-    # This prevents writing to arbitrary session UUIDs or already-processed sessions
-    session = await db.get(KYCSession, session_id)
+    # SECURITY: Verify session ownership and status to enforce tenant isolation.
+    session = await db.scalar(
+        select(KYCSession)
+        .where(KYCSession.id == session_id)
+        .where(KYCSession.tenant_id == tenant_id)
+        .limit(1)
+    )
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -107,7 +112,6 @@ async def get_presigned_url(
         "key": key,
         "expires_in": expires_in,
     }
-
 
 
 

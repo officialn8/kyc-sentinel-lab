@@ -61,9 +61,12 @@ function getBackendBaseUrl() {
 }
 
 async function proxy(req: NextRequest, pathParts: string[]) {
-  const { userId } = await auth();
+  const { userId, orgId } = await auth();
   if (!userId) {
     return NextResponse.json({ detail: "Authentication required" }, { status: 401 });
+  }
+  if (!orgId) {
+    return NextResponse.json({ detail: "Organization context required" }, { status: 403 });
   }
 
   const method = req.method.toUpperCase();
@@ -83,12 +86,15 @@ async function proxy(req: NextRequest, pathParts: string[]) {
   headers.delete("cookie");
   headers.delete("x-forwarded-for");
   headers.delete("x-real-ip");
+  headers.delete("x-authenticated-org-id");
+  headers.delete("x-tenant-id");
 
   const apiKey = process.env.BACKEND_API_KEY;
   if (apiKey) {
     headers.set("X-API-Key", apiKey);
   }
   headers.set("X-Authenticated-User-Id", userId);
+  headers.set("X-Authenticated-Org-Id", orgId);
 
   // Forward body for non-GET/HEAD requests
   const body =
@@ -146,4 +152,3 @@ export async function DELETE(req: NextRequest, { params }: RouteContext) {
   const { path } = await params;
   return proxy(req, path);
 }
-

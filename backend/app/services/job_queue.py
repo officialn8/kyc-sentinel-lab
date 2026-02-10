@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -21,11 +22,22 @@ def _is_job_stale(job: KYCJob) -> bool:
     return job.updated_at < cutoff
 
 
-async def enqueue_process_session(db: AsyncSession, session_id: str) -> KYCJob:
+def _normalize_session_id(session_id: uuid.UUID | str) -> uuid.UUID:
+    """Coerce session identifiers to UUID for DB driver compatibility."""
+    if isinstance(session_id, uuid.UUID):
+        return session_id
+    return uuid.UUID(str(session_id))
+
+
+async def enqueue_process_session(
+    db: AsyncSession,
+    session_id: uuid.UUID | str,
+) -> KYCJob:
+    normalized_session_id = _normalize_session_id(session_id)
     existing = await db.scalar(
         select(KYCJob)
         .where(
-            KYCJob.session_id == session_id,
+            KYCJob.session_id == normalized_session_id,
             KYCJob.job_type == "process_session",
             KYCJob.status.in_(("pending", "processing")),
         )
@@ -38,7 +50,11 @@ async def enqueue_process_session(db: AsyncSession, session_id: str) -> KYCJob:
         else:
             return existing
 
-    job = KYCJob(session_id=session_id, job_type="process_session", status="pending")
+    job = KYCJob(
+        session_id=normalized_session_id,
+        job_type="process_session",
+        status="pending",
+    )
     db.add(job)
     return job
 
@@ -46,14 +62,15 @@ async def enqueue_process_session(db: AsyncSession, session_id: str) -> KYCJob:
 async def enqueue_generate_synthetic_session(
     db: AsyncSession,
     *,
-    session_id: str,
+    session_id: uuid.UUID | str,
     attack_family: str,
     attack_severity: str,
 ) -> KYCJob:
+    normalized_session_id = _normalize_session_id(session_id)
     existing = await db.scalar(
         select(KYCJob)
         .where(
-            KYCJob.session_id == session_id,
+            KYCJob.session_id == normalized_session_id,
             KYCJob.job_type == "generate_synthetic_session",
             KYCJob.status.in_(("pending", "processing")),
         )
@@ -67,7 +84,7 @@ async def enqueue_generate_synthetic_session(
             return existing
 
     job = KYCJob(
-        session_id=session_id,
+        session_id=normalized_session_id,
         job_type="generate_synthetic_session",
         status="pending",
         attack_family=attack_family,
@@ -75,4 +92,3 @@ async def enqueue_generate_synthetic_session(
     )
     db.add(job)
     return job
-

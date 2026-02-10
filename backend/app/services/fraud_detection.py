@@ -82,6 +82,7 @@ class FraudSignals:
 
 async def check_velocity(
     db: AsyncSession,
+    tenant_id: Optional[str],
     device_fingerprint: Optional[str],
     client_ip: Optional[str],
     thresholds: Optional[VelocityThresholds] = None,
@@ -95,6 +96,7 @@ async def check_velocity(
     
     Args:
         db: Database session
+        tenant_id: Tenant identifier used for strict data isolation
         device_fingerprint: Unique device identifier (can be None)
         client_ip: Client IP address (can be None)
         thresholds: Velocity thresholds to use (defaults to settings)
@@ -105,6 +107,10 @@ async def check_velocity(
     """
     if thresholds is None:
         thresholds = VelocityThresholds.from_settings()
+
+    # Legacy sessions without tenant context are intentionally excluded.
+    if not tenant_id:
+        return VelocityCheck(thresholds_used=thresholds)
     
     from datetime import timezone
     now = datetime.now(timezone.utc)
@@ -119,6 +125,7 @@ async def check_velocity(
         query_1h = select(func.count()).select_from(KYCSession).where(
             and_(
                 KYCSession.device_fingerprint == device_fingerprint,
+                KYCSession.tenant_id == tenant_id,
                 KYCSession.created_at >= one_hour_ago,
             )
         )
@@ -131,6 +138,7 @@ async def check_velocity(
         query_24h = select(func.count()).select_from(KYCSession).where(
             and_(
                 KYCSession.device_fingerprint == device_fingerprint,
+                KYCSession.tenant_id == tenant_id,
                 KYCSession.created_at >= twenty_four_hours_ago,
             )
         )
@@ -157,6 +165,7 @@ async def check_velocity(
         query_1h = select(func.count()).select_from(KYCSession).where(
             and_(
                 KYCSession.client_ip == client_ip,
+                KYCSession.tenant_id == tenant_id,
                 KYCSession.created_at >= one_hour_ago,
             )
         )
@@ -169,6 +178,7 @@ async def check_velocity(
         query_24h = select(func.count()).select_from(KYCSession).where(
             and_(
                 KYCSession.client_ip == client_ip,
+                KYCSession.tenant_id == tenant_id,
                 KYCSession.created_at >= twenty_four_hours_ago,
             )
         )
@@ -355,17 +365,17 @@ def _get_country_from_timezone(timezone: str) -> Optional[str]:
 async def check_fraud_ring(
     db: AsyncSession,
     *,
+    tenant_id: Optional[str],
     session_id: Optional[str],
     face_embedding: Optional[list[float]],
     similarity_threshold: Optional[float] = None,
     min_matches: Optional[int] = None,
-    sample_limit: int = 3,
 ) -> Optional[dict]:
     """Detect fraud ring linkage via similar face embeddings.
 
     Returns a dict with match_count and max_similarity if threshold met.
     """
-    if not session_id or not face_embedding:
+    if not tenant_id or not session_id or not face_embedding:
         return None
 
     threshold = similarity_threshold or settings.fraud_ring_similarity_threshold
@@ -382,6 +392,7 @@ async def check_fraud_ring(
             func.min(distance_expr).label("min_distance"),
         )
         .where(KYCSession.id != session_id)
+        .where(KYCSession.tenant_id == tenant_id)
         .where(KYCSession.face_embedding.isnot(None))
         .where(KYCSession.deleted_at.is_(None))
         .where(distance_expr < max_distance)
@@ -392,37 +403,18 @@ async def check_fraud_ring(
     if not match_count or match_count < required_matches:
         return None
 
-    # Sample a few closest matches for evidence
-    sample_stmt = (
-        select(KYCSession.id, distance_expr.label("distance"))
-        .where(KYCSession.id != session_id)
-        .where(KYCSession.face_embedding.isnot(None))
-        .where(KYCSession.deleted_at.is_(None))
-        .where(distance_expr < max_distance)
-        .order_by(distance_expr)
-        .limit(sample_limit)
-    )
-    sample_rows = (await db.execute(sample_stmt)).all()
-    samples = [
-        {
-            "session_id": str(row[0]),
-            "similarity": round(1.0 - float(row[1]), 4),
-        }
-        for row in sample_rows
-    ]
-
     max_similarity = 1.0 - float(min_distance) if min_distance is not None else threshold
 
     return {
         "match_count": int(match_count),
         "max_similarity": round(max_similarity, 4),
         "threshold": threshold,
-        "samples": samples,
     }
 
 
 async def compute_fraud_signals(
     db: AsyncSession,
+    tenant_id: Optional[str] = None,
     device_fingerprint: Optional[str] = None,
     client_ip: Optional[str] = None,
     session_id: Optional[str] = None,
@@ -440,6 +432,7 @@ async def compute_fraud_signals(
 
     Args:
         db: Database session
+        tenant_id: Tenant identifier used for strict data isolation
         device_fingerprint: Unique device identifier (client-provided, untrusted)
         client_ip: Client IP address (server-captured, trusted)
         document_country: Country from document MRZ/OCR
@@ -463,6 +456,7 @@ async def compute_fraud_signals(
     # Check velocity using server-captured IP
     velocity = await check_velocity(
         db=db,
+        tenant_id=tenant_id,
         device_fingerprint=device_fingerprint,
         client_ip=client_ip,
         exclude_session_id=exclude_session_id,
@@ -486,6 +480,9 @@ async def compute_fraud_signals(
     )
     result.geo_anomaly = geo
 
+    if not device_country:
+        result.reason_codes.append("FRAUD_GEO_SIGNAL_UNAVAILABLE")
+
     if geo.is_anomalous:
         result.reason_codes.append("FRAUD_GEO_MISMATCH")
         fraud_score += geo.confidence * 0.3
@@ -493,6 +490,7 @@ async def compute_fraud_signals(
     # Fraud ring detection (advisory only)
     fraud_ring = await check_fraud_ring(
         db=db,
+        tenant_id=tenant_id,
         session_id=session_id,
         face_embedding=face_embedding,
     )

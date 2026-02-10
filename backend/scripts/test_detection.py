@@ -39,7 +39,7 @@ def print_section(title: str):
     print(f"{'='*60}")
 
 
-def test_images(selfie_path: str, id_path: str, output_dir: str = None):
+def run_images(selfie_path: str, id_path: str, output_dir: str = None):
     """Run detection pipeline on image pair."""
     
     print_section("LOADING IMAGES")
@@ -117,7 +117,7 @@ def test_images(selfie_path: str, id_path: str, output_dir: str = None):
         save_results(output_dir, face_result, doc_result, None)
 
 
-def test_video(video_path: str, output_dir: str = None):
+def run_video(video_path: str, output_dir: str = None):
     """Run PAD analysis on video."""
     
     print_section("EXTRACTING FRAMES")
@@ -155,7 +155,7 @@ def test_video(video_path: str, output_dir: str = None):
         print(f"... and {len(pad_result.frame_metrics) - 10} more frames")
 
 
-def test_fixtures():
+def run_fixtures():
     """Run tests on all fixture files."""
     fixtures_dir = Path(__file__).parent.parent / "tests" / "fixtures"
     
@@ -305,15 +305,14 @@ Examples:
     args = parser.parse_args()
     
     if args.fixtures:
-        test_fixtures()
+        run_fixtures()
     elif args.selfie and args.id:
-        test_images(args.selfie, args.id, args.output)
+        run_images(args.selfie, args.id, args.output)
     elif args.video:
-        test_video(args.video, args.output)
+        run_video(args.video, args.output)
     else:
         parser.print_help()
 
 
 if __name__ == "__main__":
     main()
-

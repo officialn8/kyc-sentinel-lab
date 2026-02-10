@@ -40,6 +40,9 @@ class KYCSession(Base):
 
     # Source
     source: Mapped[str] = mapped_column(String(20))  # "upload" | "synthetic"
+    tenant_id: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True, index=True
+    )  # Clerk organization ID used for tenant isolation
     
     # Attack family - validated via AttackFamily enum
     # Valid values: replay, injection, face_swap, doc_tamper, benign
@@ -111,7 +114,6 @@ class KYCSession(Base):
 
     def __repr__(self) -> str:
         return f"<KYCSession(id={self.id}, status={self.status}, source={self.source})>"
-
 
 
 

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class ResultResponse(BaseModel):
@@ -20,13 +20,15 @@ class ResultResponse(BaseModel):
     face_similarity: Optional[float] = None
     pad_score: Optional[float] = None
     doc_score: Optional[float] = None
+    fraud_score: Optional[float] = None
 
     model_version: str
     rules_version: str
 
-    model_config = {"from_attributes": True}
-
-
+    model_config = ConfigDict(
+        from_attributes=True,
+        protected_namespaces=(),
+    )
 
 
 

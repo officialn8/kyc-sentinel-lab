@@ -23,7 +23,8 @@ async def test_create_session(client: AsyncClient) -> None:
     data = response.json()
     
     assert "session" in data
-    assert "upload_urls" in data
+    assert "selfie_upload" in data
+    assert "id_upload" in data
     assert data["session"]["status"] == "pending"
     assert data["session"]["source"] == "upload"
 
@@ -125,7 +126,6 @@ async def test_list_attack_families(client: AsyncClient) -> None:
     assert "face_swap" in family_ids
     assert "doc_tamper" in family_ids
     assert "benign" in family_ids
-
 
 
 

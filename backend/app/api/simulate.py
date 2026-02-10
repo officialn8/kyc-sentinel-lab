@@ -1,12 +1,10 @@
 """Synthetic session generation endpoints."""
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.api.deps import DbSession
-from app.api.security import rate_limiter
+from app.api.security import rate_limiter, require_tenant_context
 from app.models.session import KYCSession
 from app.schemas.session import SessionResponse
 from app.services.job_queue import enqueue_generate_synthetic_session
@@ -71,8 +69,11 @@ ATTACK_FAMILIES = [
 
 
 @router.get("/families", response_model=list[AttackFamily])
-async def list_attack_families() -> list[AttackFamily]:
+async def list_attack_families(
+    tenant_id: str = Depends(require_tenant_context),
+) -> list[AttackFamily]:
     """List available attack families for simulation."""
+    _ = tenant_id
     return ATTACK_FAMILIES
 
 
@@ -84,6 +85,7 @@ async def list_attack_families() -> list[AttackFamily]:
 async def generate_synthetic_sessions(
     request: SimulateRequest,
     db: DbSession,
+    tenant_id: str = Depends(require_tenant_context),
 ) -> list[SessionResponse]:
     """Generate synthetic KYC sessions with specified attack patterns."""
     sessions = []
@@ -91,6 +93,7 @@ async def generate_synthetic_sessions(
     for _ in range(request.count):
         session = KYCSession(
             source="synthetic",
+            tenant_id=tenant_id,
             attack_family=request.attack_family,
             attack_severity=request.attack_severity,
             status="processing",
@@ -112,8 +115,6 @@ async def generate_synthetic_sessions(
     await db.commit()
 
     return [SessionResponse.model_validate(s) for s in sessions]
-
-
 
 
 
